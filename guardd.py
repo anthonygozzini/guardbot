@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import guard
+import approvals as approvals_mod
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("GUARDBOT_PORT", "8403"))
@@ -220,7 +221,19 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
-        if u.path in ("/", "/llms.txt"):
+        if u.path in ("/", "/view"):
+            try:
+                with open(os.path.join(BASE, "view.html"), "rb") as fh:
+                    body = fh.read()
+            except OSError:
+                body = b"<h1>viewer not found</h1>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if u.path == "/llms.txt":
             body = LLMS.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -237,6 +250,16 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/v1/check":
             q = parse_qs(u.query)
             self._check((q.get("chain") or [""])[0], (q.get("address") or [""])[0])
+        elif u.path == "/v1/approvals":
+            # local-first & private: query live, per request. Nothing is stored or published.
+            q = parse_qs(u.query)
+            addr = (q.get("address") or [""])[0].strip()
+            if not addr:
+                return self._json(400, {"error": "address is required"})
+            try:
+                self._json(200, approvals_mod.approvals(addr))
+            except Exception as e:
+                self._json(500, {"error": f"approvals lookup failed: {e}"})
         else:
             self._json(404, {"error": "not found"})
 

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GuardBot — Approvals Viewer</title>
+<style>
+:root{--bg:#0b0d10;--panel:#14171c;--line:#232830;--ink:#e8ebe6;--soft:#9aa2ab;--faint:#6f767e;
+--accent:#33d59d;--warn:#e2a244;--risk:#f0685c;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:920px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--soft);margin:0 0 22px;font-size:.95rem}
+.sub b{color:var(--accent)}
+form{display:flex;gap:10px;flex-wrap:wrap}
+input{flex:1;min-width:240px;background:var(--panel);border:1px solid var(--line);color:var(--ink);
+border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:.9rem}
+input:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{background:var(--accent);color:#06251a;border:0;border-radius:10px;padding:12px 20px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.hint{color:var(--faint);font-size:.8rem;margin:8px 0 0;font-family:var(--mono)}
+.status{margin:20px 0 10px;color:var(--soft)}
+.status b{color:var(--ink)}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:.88rem}
+th{text-align:left;color:var(--faint);font-weight:500;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+.mono{font-family:var(--mono);font-size:.82rem}
+.chip{display:inline-block;font-family:var(--mono);font-size:.68rem;padding:2px 7px;border-radius:100px;border:1px solid var(--line);color:var(--soft)}
+.badge{font-family:var(--mono);font-size:.68rem;padding:2px 8px;border-radius:100px;font-weight:600}
+.b-unl{background:#2c1613;color:var(--risk)}
+.b-risk{background:#2a1f0f;color:var(--warn)}
+.b-ok{background:#0d2a20;color:var(--accent)}
+.trunc{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
+.empty{color:var(--soft);padding:24px 10px;text-align:center}
+.err{color:var(--risk);padding:14px;border:1px dashed var(--risk);border-radius:10px;background:#2c1613}
+a{color:var(--accent)}
+</style></head>
+<body><div class="wrap">
+  <h1>⚡ GuardBot — Approvals Viewer</h1>
+  <p class="sub">Paste any address, see its standing token approvals across <b>EVM · TRON · Solana</b> — the chains a single revoke tool usually doesn't unify. Read-only, no wallet needed.</p>
+  <form id="f">
+    <input id="addr" placeholder="0x… (EVM)  ·  T… (TRON)  ·  base58 (Solana)" autocomplete="off" spellcheck="false">
+    <button id="go" type="submit">Scan</button>
+  </form>
+  <p class="hint">Chain auto-detected from the address format. EVM scans Ethereum · BSC · Base · Arbitrum · Polygon.</p>
+  <div id="out"></div>
+</div>
+<script>
+var f=document.getElementById('f'),addr=document.getElementById('addr'),go=document.getElementById('go'),out=document.getElementById('out');
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function short(s){s=String(s||'');return s.length>18?s.slice(0,8)+'…'+s.slice(-6):s;}
+f.addEventListener('submit',function(e){
+  e.preventDefault();
+  var a=addr.value.trim(); if(!a)return;
+  go.disabled=true; out.innerHTML='<div class="status">Scanning…</div>';
+  fetch('/v1/approvals?address='+encodeURIComponent(a)).then(function(r){return r.json();}).then(function(d){
+    go.disabled=false;
+    if(d.error){out.innerHTML='<div class="err">'+esc(d.error)+'</div>';return;}
+    var scanned=(d.chains_scanned||[]).join(', ');
+    var head='<div class="status"><b>'+esc(d.address_type)+'</b> address · scanned <b>'+esc(scanned||d.address_type)+'</b> · '
+      +'<b>'+d.count+'</b> approvals, <b style="color:var(--risk)">'+d.risky_count+'</b> risky</div>';
+    if(d.degraded_chains&&d.degraded_chains.length){
+      head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
+        +d.degraded_chains.length+' EVM chains not scanned ('+esc(d.degraded_chains.join(', '))
+        +'). Set a free Etherscan API key (GUARDBOT_ETHERSCAN_KEY) for full multi-chain coverage.</div>';
+    }
+    if(!d.items||!d.items.length){out.innerHTML=head+'<div class="empty">No standing approvals found here. ✅</div>';return;}
+    var rows=d.items.map(function(i){
+      var badge=i.unlimited?'<span class="badge b-unl">UNLIMITED</span>':(i.risky?'<span class="badge b-risk">risky</span>':'<span class="badge b-ok">ok</span>');
+      return '<tr><td><span class="chip">'+esc(i.chain)+'</span></td>'
+        +'<td>'+esc(i.token_symbol||'—')+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
+        +'<td class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</td>'
+        +'<td class="mono">'+esc(i.kind)+'</td>'
+        +'<td>'+badge+'</td></tr>';
+    }).join('');
+    out.innerHTML=head+'<table><thead><tr><th>Chain</th><th>Token</th><th>Spender</th><th>Type</th><th>Risk</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }).catch(function(err){go.disabled=false;out.innerHTML='<div class="err">Request failed: '+esc(err.message)+'. Is the server running?</div>';});
+});
+</script>
+</body></html>

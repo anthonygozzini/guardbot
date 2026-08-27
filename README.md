@@ -15,11 +15,38 @@ with per-call **x402** payments.
 Every check carries its proof (honeypot, mint/freeze authority, taxes, liquidity, holder
 concentration, LP, and more).
 
+GuardBot does both sides of safety:
+- **Prevent** — `check_token`: is a token a trap *before* you buy?
+- **Fix / view** — `approvals`: paste any address, see standing token approvals across
+  **EVM + TRON + Solana** in one place (what single-chain revoke tools don't unify). Read-only.
+
 ## Components
-- `guard.py` — the engine: `assess(chain, address)` → normalized verdict. Stdlib only, with
-  timeout/fallback (if a source is down → explicit `warn`, never a false `safe`).
-- `guardd.py` — HTTP daemon with x402 payments.
+- `guard.py` — token-safety engine: `assess(chain, address)` → normalized verdict. Stdlib only.
+- `approvals.py` — approval viewer: `approvals(address)` across EVM (Approval events + live
+  allowance, the revoke.cash method), TRON (TronScan), Solana (SPL delegates via RPC).
+- `guardd.py` — HTTP daemon: `/v1/check`, `/v1/approvals`, `/view` (browser UI), x402 payments.
 - `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` as a tool.
+
+### Approvals viewer — local-first & private
+```bash
+python3 guardd.py            # then open http://127.0.0.1:8403/view
+python3 approvals.py 0x…     # or TRON T… / Solana base58
+```
+**Runs entirely on your machine. Queries are live and ephemeral — nothing is stored, cached,
+or published.** No server sees which address you look up (unlike a hosted checker).
+
+For complete EVM coverage, bring your own free **Alchemy key** (one key covers Ethereum, Base,
+Arbitrum, Optimism, Polygon, BSC) — Alchemy's `getLogs` limits by result count, not block range,
+so an owner-filtered Approval query passes over full history:
+```bash
+echo 'GUARDBOT_ALCHEMY_KEY=<your key>' >> .env   # .env is gitignored, never shipped
+python3 guardd.py
+```
+The key lives only in your local `.env`, never in the code or the repo — **bring-your-own-key**.
+Without it, only chains whose public RPC allows full-history `getLogs` are scanned (e.g. Arbitrum);
+the rest are reported as `degraded`, never silently missed. (This is why free-tier token-security
+APIs miss approvals: reading Approval events across full history needs an indexed provider or
+your own node — that's the data source you plug in, under your control.)
 
 ## Run
 ```bash
