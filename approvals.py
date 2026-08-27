@@ -259,6 +259,72 @@ def _solana(address):
     return items, ["solana"]
 
 
+# ---------------- leveled risk (exposure + spender trust) ----------------
+# Common, legitimate spenders — a known interaction here is genuine, not a threat.
+KNOWN_SPENDERS = {
+    "0x000000000022d473030f116ddee9f6b43ac78ba3": "Permit2 (Uniswap)",
+    "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
+    "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router",
+    "0x66a9893cc07d91d95644aedd05d03f95e1dba8af": "Uniswap Universal Router",
+    "0x1111111254eeb25477b68fb85ed929f73a960582": "1inch Router",
+    "0x111111125421ca6dc452d289314280a0f8842a65": "1inch Router v6",
+    "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Exchange Proxy",
+}
+LEVELS = ("minimal", "low", "medium", "high", "critical")
+
+
+def _level(score):
+    return (LEVELS[0] if score < 20 else LEVELS[1] if score < 40 else
+            LEVELS[2] if score < 60 else LEVELS[3] if score < 80 else LEVELS[4])
+
+
+def _goplus_malicious(chain_name, spender):
+    """Best-effort: is the spender flagged malicious by GoPlus? Returns reason or None."""
+    cfg = EVM_CFG.get(chain_name)
+    if not cfg or not spender:
+        return None
+    try:
+        d = _get(f"https://api.gopluslabs.io/api/v1/address_security/{spender}?chain_id={cfg['id']}")
+    except Exception:
+        return None
+    r = d.get("result") or {}
+    flags = ("cybercrime", "money_laundering", "financial_crime", "blacklist_doubt",
+             "phishing_activities", "stealing_attack", "fake_kyc", "malicious_mining_activities",
+             "darkweb_transactions", "sanctioned", "honeypot_related_address")
+    hit = [k for k in flags if str(r.get(k)) == "1"]
+    return ", ".join(hit) if hit else None
+
+
+def _spender_trust(chain, spender):
+    s = (spender or "").lower()
+    if s in KNOWN_SPENDERS:
+        return "legit", KNOWN_SPENDERS[s]
+    if chain in EVM_CFG:
+        bad = _goplus_malicious(chain, spender)
+        if bad:
+            return "malicious", bad
+    return "unknown", None
+
+
+def _score_items(items):
+    """Attach a graded risk_level (0-100 + label) to each item: exposure + spender trust."""
+    cache = {}
+    for it in items:
+        chain = it["chain"]
+        key = (chain, (it.get("spender") or "").lower())
+        if key not in cache:
+            cache[key] = _spender_trust(chain, it.get("spender"))
+        trust, name = cache[key]
+        exposure = 40 if it.get("unlimited") else (30 if it.get("kind") == "delegate" else 10)
+        score = max(0, min(100, exposure + {"legit": -20, "malicious": 60, "unknown": 25}[trust]))
+        it["risk_score"] = score
+        it["risk_level"] = _level(score)
+        it["spender_trust"] = trust
+        it["spender_name"] = name
+        it["risky"] = score >= 40   # back-compat; "attention" = medium+
+    return items
+
+
 def approvals(address, chain=None):
     address = str(address).strip()
     kind = chain or detect_chain(address)
@@ -271,11 +337,17 @@ def approvals(address, chain=None):
         items, scanned = _solana(address)
     else:
         return {"error": "unrecognized address (expected EVM 0x…, TRON T…, or Solana base58)"}
-    risky = [i for i in items if i.get("risky")]
+    _score_items(items)
+    levels = {lv: 0 for lv in LEVELS}
+    for i in items:
+        levels[i["risk_level"]] += 1
+    attention = levels["medium"] + levels["high"] + levels["critical"]
     out = {
         "address": address, "address_type": kind, "chains_scanned": scanned,
-        "count": len(items), "risky_count": len(risky),
-        "items": sorted(items, key=lambda i: (not i["risky"], not i["unlimited"])),
+        "count": len(items),
+        "risky_count": attention,            # medium+ = worth a look
+        "levels": levels,                    # full breakdown per level
+        "items": sorted(items, key=lambda i: -i["risk_score"]),
         "engine": "guardbot-approvals/0.1",
     }
     if degraded:

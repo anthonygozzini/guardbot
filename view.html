@@ -29,6 +29,11 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
 .b-unl{background:#2c1613;color:var(--risk)}
 .b-risk{background:#2a1f0f;color:var(--warn)}
 .b-ok{background:#0d2a20;color:var(--accent)}
+.lvl{font-family:var(--mono);font-size:.68rem;padding:2px 9px;border-radius:100px;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.lvl-minimal,.lvl-low{background:#0d2a20;color:var(--accent)}
+.lvl-medium{background:#2a2610;color:#dcc148}
+.lvl-high{background:#2a1f0f;color:var(--warn)}
+.lvl-critical{background:#2c1613;color:var(--risk)}
 .trunc{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
 .empty{color:var(--soft);padding:24px 10px;text-align:center}
 .err{color:var(--risk);padding:14px;border:1px dashed var(--risk);border-radius:10px;background:#2c1613}
@@ -59,16 +64,23 @@ f.addEventListener('submit',function(e){
     var head='<div class="status"><b>'+esc(d.address_type)+'</b> address · scanned <b>'+esc(scanned||d.address_type)+'</b> · '
       +'<b>'+d.count+'</b> approvals, <b style="color:var(--risk)">'+d.risky_count+'</b> risky</div>';
     if(d.degraded_chains&&d.degraded_chains.length){
+      var note=d.note||'Add a free Alchemy key (GUARDBOT_ALCHEMY_KEY) in your local .env for full coverage.';
       head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
         +d.degraded_chains.length+' EVM chains not scanned ('+esc(d.degraded_chains.join(', '))
-        +'). Set a free Etherscan API key (GUARDBOT_ETHERSCAN_KEY) for full multi-chain coverage.</div>';
+        +'). '+esc(note)+'</div>';
     }
     if(!d.items||!d.items.length){out.innerHTML=head+'<div class="empty">No standing approvals found here. ✅</div>';return;}
     var rows=d.items.map(function(i){
-      var badge=i.unlimited?'<span class="badge b-unl">UNLIMITED</span>':(i.risky?'<span class="badge b-risk">risky</span>':'<span class="badge b-ok">ok</span>');
+      var lv=i.risk_level||'medium';
+      var badge='<span class="lvl lvl-'+esc(lv)+'">'+esc(lv)+' · '+(i.risk_score==null?'?':i.risk_score)+'</span>'
+        +(i.unlimited?' <span class="chip" title="unlimited allowance">∞</span>':'');
+      var spend=i.spender_name
+        ? '<span title="'+esc(i.spender)+'">'+esc(i.spender_name)+'</span> <span class="chip">known</span>'
+        : '<span class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</span>'
+          +(i.spender_trust==='unknown'?' <span class="chip">unknown</span>':'');
       return '<tr><td><span class="chip">'+esc(i.chain)+'</span></td>'
         +'<td>'+esc(i.token_symbol||'—')+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
-        +'<td class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</td>'
+        +'<td>'+spend+'</td>'
         +'<td class="mono">'+esc(i.kind)+'</td>'
         +'<td>'+badge+'</td></tr>';
     }).join('');
