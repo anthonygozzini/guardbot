@@ -83,6 +83,9 @@ Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalan
 - [x] MCP stdio server with the `check_token` tool.
 - [x] Real x402 payments (402 `accepts` → verify + settle → verdict + `X-PAYMENT-RESPONSE`),
       tested end-to-end.
+- [x] Local-first approvals viewer (`/v1/approvals`, `/view`) across EVM + TRON + Solana —
+      live, private, bring-your-own-key; the "fix" side of the "prevent" side.
+- [ ] Revoke action (signed tx via WalletConnect).
 - [ ] VibeKit plug-in packaging + example agent.
 - [ ] Multi-chain expansion + latency SLA.
 
