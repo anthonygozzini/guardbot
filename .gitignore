@@ -1,0 +1,4 @@
+guardbot-secret.bin
+__pycache__/
+*.pyc
+*.log
