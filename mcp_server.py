@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""GuardBot MCP server (stdio) — espone check_token come tool MCP tipizzato.
+"""GuardBot MCP server (stdio) — exposes check_token as a typed MCP tool.
 
-Un agente (Claude, VibeKit, ecc.) monta questo server e chiama check_token(chain, address)
-prima di comprare. Nessuna dipendenza: JSON-RPC 2.0 newline-delimited su stdin/stdout,
-come da transport stdio di MCP. La logica di sicurezza è guard.assess().
+An agent (Claude, VibeKit, etc.) mounts this server and calls check_token(chain, address)
+before buying. No dependencies: newline-delimited JSON-RPC 2.0 over stdin/stdout, per the
+MCP stdio transport. The safety logic is guard.assess().
 """
 
 import json
@@ -14,15 +14,15 @@ import guard
 PROTOCOL = "2024-11-05"
 TOOL = {
     "name": "check_token",
-    "description": ("Pre-trade safety check: dato un token (chain + address), ritorna un "
-                    "verdetto safe/warn/block con le prove. Aggrega RugCheck (Solana) e "
-                    "GoPlus (EVM). Usalo PRIMA di comprare un token."),
+    "description": ("Pre-trade safety check: given a token (chain + address), returns a "
+                    "safe/warn/block verdict with the evidence. Aggregates RugCheck (Solana) "
+                    "and GoPlus (EVM). Call this BEFORE buying a token."),
     "inputSchema": {
         "type": "object",
         "properties": {
             "chain": {"type": "string",
                       "description": "solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalanche"},
-            "address": {"type": "string", "description": "mint Solana o address EVM (0x…) del token"},
+            "address": {"type": "string", "description": "Solana mint or EVM address (0x…) of the token"},
         },
         "required": ["chain", "address"],
     },
@@ -45,7 +45,7 @@ def error(id_, code, message):
 def handle(msg):
     method = msg.get("method")
     id_ = msg.get("id")
-    if id_ is None:  # notifica: nessuna risposta
+    if id_ is None:  # notification: no response
         return
     if method == "initialize":
         result(id_, {"protocolVersion": PROTOCOL,
@@ -58,17 +58,17 @@ def handle(msg):
     elif method == "tools/call":
         params = msg.get("params") or {}
         if params.get("name") != "check_token":
-            return error(id_, -32602, f"tool sconosciuto: {params.get('name')}")
+            return error(id_, -32602, f"unknown tool: {params.get('name')}")
         args = params.get("arguments") or {}
         try:
             verdict = guard.assess(args.get("chain", ""), args.get("address", ""))
         except Exception as e:
-            return result(id_, {"content": [{"type": "text", "text": f"errore: {e}"}], "isError": True})
+            return result(id_, {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True})
         is_err = "error" in verdict
         result(id_, {"content": [{"type": "text", "text": json.dumps(verdict, ensure_ascii=False)}],
                      "isError": is_err})
     else:
-        error(id_, -32601, f"metodo non gestito: {method}")
+        error(id_, -32601, f"unhandled method: {method}")
 
 
 def main():

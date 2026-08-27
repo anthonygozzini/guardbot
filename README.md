@@ -1,71 +1,69 @@
-# GuardBot ⚡ — pre-trade safety per agenti & bot (v0)
+# GuardBot ⚡ — pre-trade safety for agents & bots
 
-Prima di comprare un token: **è un rug / honeypot / trappola?** GuardBot aggrega
-RugCheck (Solana) e GoPlus (EVM) in **un solo verdetto** `safe | warn | block` **con
-le prove**. Non instrada trade, non tocca fondi: legge solo dati pubblici.
+Before you buy a token: **is it a rug / honeypot / trap?** GuardBot aggregates
+RugCheck (Solana) and GoPlus (EVM) into **one verdict** — `safe | warn | block` — **with
+the evidence**. It never routes trades or touches funds: it only reads public data.
 
-È il v0 del **Piano Breve** della roadmap (ponte di cassa: grant Arbitrum Trailblazer +
-per-chiamata x402 + ricompense builder). Riusa il contratto "verdetto con prove" e il
-paywall 402 di Referee (`~/vibe/referee/`).
+Designed as a typed **MCP tool** an agent calls *before* it buys, plus a plain HTTP API,
+with per-call **x402** payments.
 
-## Cosa fa (provato su token reali)
-- **safe** (score 100): token puliti.
-- **warn** (es. 88 — "CyberLeek": metadata mutabile; USDC-Solana: mint/freeze authority attive).
-- **block** (es. 0 — "モナー": liquidità bassa + holder concentrato).
+## What it does (tested on live tokens)
+- **safe** (score 100): clean tokens.
+- **warn** (e.g. 88 — mutable metadata; USDC-Solana: active mint/freeze authority).
+- **block** (e.g. 0 — low liquidity + concentrated holder).
 
-Ogni check porta la sua prova (honeypot, mint/freeze authority, tax, liquidità,
-concentrazione holder, LP, ecc.).
+Every check carries its proof (honeypot, mint/freeze authority, taxes, liquidity, holder
+concentration, LP, and more).
 
-## Componenti
-- `guard.py` — il motore: `assess(chain, address)` → verdetto normalizzato. Stdlib, con
-  timeout/fallback (se una fonte è giù → `warn` esplicito, mai un falso `safe`).
-- `guardd.py` — daemon HTTP.
-- `mcp_server.py` — server MCP (stdio): espone `check_token(chain, address)` come tool.
+## Components
+- `guard.py` — the engine: `assess(chain, address)` → normalized verdict. Stdlib only, with
+  timeout/fallback (if a source is down → explicit `warn`, never a false `safe`).
+- `guardd.py` — HTTP daemon with x402 payments.
+- `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` as a tool.
 
-## Avvio
+## Run
 ```bash
-cd ~/vibe/guardbot
-
-# motore da CLI
+# engine from the CLI
 python3 guard.py solana EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 
-# daemon HTTP (gratis, per demo/test/ricompense builder)
+# HTTP daemon (free, for demo/testing)
 python3 guardd.py                       # :8403
 curl "http://127.0.0.1:8403/v1/check?chain=solana&address=<mint>"
 curl -X POST http://127.0.0.1:8403/v1/check -d '{"chain":"base","address":"0x…"}'
 
-# modalità a pagamento (scaffold x402): ritorna 402 con challenge
-GUARDBOT_PRICE_USDC=0.01 GUARDBOT_PAY_TO=0x<tuo> python3 guardd.py
+# paid mode (real x402): returns 402 with `accepts`, verifies + settles via a facilitator
+GUARDBOT_PRICE_USDC=0.01 \
+GUARDBOT_NETWORK=base-sepolia \
+GUARDBOT_FACILITATOR=<x402 facilitator url> \
+GUARDBOT_PAY_TO=0x<your address> \
+python3 guardd.py
 
-# tool MCP per un agente (Claude / VibeKit)
-python3 mcp_server.py                    # parla JSON-RPC su stdio
+# MCP tool for an agent (Claude / VibeKit)
+python3 mcp_server.py                    # speaks JSON-RPC over stdio
 ```
-Endpoint gratis: `GET /llms.txt` (onboarding agenti), `GET /v1/status`.
-Chain: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalanche`.
+Free endpoints: `GET /llms.txt` (agent onboarding), `GET /v1/status`.
+Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalanche`.
 
-## Modello di guadagno
-- **Gratis** (default v0): usabile subito, per demo e ricompense builder Base/Farcaster.
-- **Per-chiamata x402-USDC** (scaffold pronto): micro-fee per verifica, come GoPlus pay-as-you-go.
-- **Grant** Arbitrum Trailblazer ($10k): impacchettare come tool MCP per agenti VibeKit.
+## Payment model
+- **Free** (default): usable right away, for demos.
+- **Per-call x402-USDC**: micro-fee per check, like GoPlus's agent pay-as-you-go. Real
+  enforcement (facilitator `/verify` + `/settle`); if the facilitator isn't configured,
+  paid requests are rejected — never a false "paid".
 
-## Stato — cosa è vero e cosa manca (onesto)
-- [x] Motore `assess()` funzionante su Solana (RugCheck) + EVM (GoPlus), verdetto+prove, provato su token reali.
-- [x] Daemon HTTP (`/v1/check`, `/llms.txt`, `/v1/status`) + cache.
-- [x] Server MCP stdio con tool `check_token` (initialize/tools.list/tools.call verificati).
-- [x] **Pagamento x402 REALE** (non più stub): 402 con `accepts` → verify+settle via facilitator
-      → verdetto + header `X-PAYMENT-RESPONSE`. Provato end-to-end (facilitator finto); se il
-      facilitator non è configurato, le richieste a pagamento vengono rifiutate (mai un falso 'pagato').
-- [ ] **Azioni fisicamente di Anthony** (vedi `HANDOFF.md`): pubblicare il repo, inviare la
-      submission Trailblazer ($10k), attivare un canale di ricompense builder, e accendere x402
-      con un facilitator + wallet reali. Tutto preparato al copia-incolla.
+## Status
+- [x] `assess()` engine on Solana (RugCheck) + EVM (GoPlus), verdict + evidence, tested on live tokens.
+- [x] HTTP daemon (`/v1/check`, `/llms.txt`, `/v1/status`) + cache.
+- [x] MCP stdio server with the `check_token` tool.
+- [x] Real x402 payments (402 `accepts` → verify + settle → verdict + `X-PAYMENT-RESPONSE`),
+      tested end-to-end.
+- [ ] VibeKit plug-in packaging + example agent.
+- [ ] Multi-chain expansion + latency SLA.
 
-## Riferimenti
+## References
 - GoPlus Security API — https://docs.gopluslabs.io/reference/api-overview
 - RugCheck REST — https://api.rugcheck.xyz/swagger/index.html
-- Arbitrum Trailblazer 2.0 — https://blog.arbitrum.foundation/trailblazer-2-0-1m-in-grants-to-power-agentic-defi-on-arbitrum/
+- x402 — https://github.com/x402-foundation/x402
 - VibeKit — https://vibekit.ai/
-- Riuso da Referee — `~/vibe/referee/refereed.py` (paywall 402, token HMAC, verdetto+prove)
-- Piano completo — Piano Breve (artifact) + `~/.claude/plans/all-artefatto-…dazzling-codd.md`
 
-⚠️ Note: GoPlus-Solana è inaffidabile (timeout/null) → per Solana ci si affida a RugCheck.
-Non è consulenza finanziaria; è un segnale di sicurezza su dati pubblici.
+Note: GoPlus's Solana endpoint is unreliable (timeouts/null) → Solana relies on RugCheck.
+This is a safety signal on public data, not financial advice.

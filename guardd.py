@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""GuardBot daemon — HTTP API per il verdetto di sicurezza pre-trade, con pagamento x402.
+"""GuardBot daemon — HTTP API for the pre-trade safety verdict, with x402 payments.
 
-Endpoint:
-  GET  /llms.txt      onboarding per agenti (gratis)
-  GET  /v1/status     stato servizio (gratis)
-  GET  /v1/check?chain=<c>&address=<a>   verdetto (a pagamento se PRICE>0)
+Endpoints:
+  GET  /llms.txt      agent onboarding (free)
+  GET  /v1/status     service status (free)
+  GET  /v1/check?chain=<c>&address=<a>   verdict (paid if PRICE>0)
   POST /v1/check      body {chain,address}
 
-Pagamento = x402 vero (HTTP 402 + facilitator /verify + /settle), scheme "exact".
-Modalità:
-  - PRICE_USDC=0 (default): gratis, usabile/demo subito.
-  - PRICE_USDC>0 + GUARDBOT_FACILITATOR + GUARDBOT_PAY_TO: enforcement on-chain reale.
-    Se PRICE>0 ma manca il facilitator, la richiesta a pagamento viene RIFIUTATA (nessun
-    falso 'pagato'): l'enforcement è reale o assente, mai finto.
-Riusa da Referee lo spirito del contratto (verdetto+prove) e il paywall per-chiamata.
+Payment = real x402 (HTTP 402 + facilitator /verify + /settle), "exact" scheme.
+Modes:
+  - PRICE_USDC=0 (default): free, usable/demoable right away.
+  - PRICE_USDC>0 + GUARDBOT_FACILITATOR + GUARDBOT_PAY_TO: real on-chain enforcement.
+    If PRICE>0 but the facilitator is missing, paid requests are REJECTED (never a
+    false 'paid'): enforcement is real or absent, never faked.
+Inherits the verdict-with-evidence contract and per-call paywall from Referee.
 """
 
 import base64
@@ -37,24 +37,24 @@ NETWORK = os.environ.get("GUARDBOT_NETWORK", "base-sepolia")
 CACHE_TTL = 120
 FAC_TIMEOUT = 20
 
-# USDC per network (6 decimali). Override con GUARDBOT_ASSET se serve.
+# USDC per network (6 decimals). Override with GUARDBOT_ASSET if needed.
 USDC = {
     "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 }
 ASSET = os.environ.get("GUARDBOT_ASSET", USDC.get(NETWORK, ""))
-ATOMIC = str(int(round(PRICE_USDC * 1_000_000)))  # USDC 6 decimali
+ATOMIC = str(int(round(PRICE_USDC * 1_000_000)))  # USDC has 6 decimals
 
 START = time.time()
 STATS = {"checks": 0, "blocked": 0, "warned": 0, "paid": 0, "challenges": 0}
 LOCK = threading.Lock()
 CACHE = {}
-SETTLED = set()   # replay-guard sui tx già regolati
+SETTLED = set()   # replay-guard on already-settled payments
 
 
 def payment_requirements(resource_url):
-    """x402 'exact' scheme PaymentRequirements. Validare i campi contro il /supported
-    del facilitator scelto prima del mainnet."""
+    """x402 'exact' scheme PaymentRequirements. Validate the fields against the chosen
+    facilitator's /supported endpoint before mainnet."""
     return {
         "scheme": "exact",
         "network": NETWORK,
@@ -84,8 +84,8 @@ def _facilitator(path, payload):
 
 
 def read_payment_header(headers):
-    """Accetta i nomi header divergenti dell'ecosistema (Coinbase X-PAYMENT /
-    foundation PAYMENT-SIGNATURE). Ritorna il PaymentPayload decodificato o None."""
+    """Accept the ecosystem's divergent header names (Coinbase X-PAYMENT /
+    foundation PAYMENT-SIGNATURE). Returns the decoded PaymentPayload or None."""
     raw = headers.get("X-PAYMENT") or headers.get("PAYMENT-SIGNATURE") or headers.get("X-Payment")
     if not raw:
         return None
@@ -96,28 +96,28 @@ def read_payment_header(headers):
 
 
 def verify_and_settle(payload, requirements):
-    """Enforcement x402 reale via facilitator: /verify poi /settle.
-    Ritorna (ok: bool, settle_response|reason)."""
+    """Real x402 enforcement via facilitator: /verify then /settle.
+    Returns (ok: bool, settle_response|reason)."""
     if not (FACILITATOR and PAY_TO and ASSET):
-        return False, "facilitator/pay_to non configurati (enforcement non attivo)"
+        return False, "facilitator/pay_to not configured (enforcement inactive)"
     body = {"x402Version": 1, "paymentPayload": payload, "paymentRequirements": requirements}
     try:
         v = _facilitator("/verify", body)
     except Exception as e:
-        return False, f"facilitator /verify irraggiungibile: {str(e)[:120]}"
+        return False, f"facilitator /verify unreachable: {str(e)[:120]}"
     if not v.get("isValid", v.get("valid", False)):
-        return False, f"pagamento non valido: {v.get('invalidReason') or v.get('reason') or 'rifiutato'}"
-    # anti-replay: chiave = tx/nonce del payload
+        return False, f"invalid payment: {v.get('invalidReason') or v.get('reason') or 'rejected'}"
+    # anti-replay: key = tx/nonce from the payload
     key = json.dumps(payload.get("payload", payload), sort_keys=True)[:512]
     with LOCK:
         if key in SETTLED:
-            return False, "pagamento già usato"
+            return False, "payment already used"
     try:
         s = _facilitator("/settle", body)
     except Exception as e:
-        return False, f"facilitator /settle irraggiungibile: {str(e)[:120]}"
+        return False, f"facilitator /settle unreachable: {str(e)[:120]}"
     if not s.get("success", False):
-        return False, f"settle fallito: {s.get('errorReason') or s.get('error') or 'sconosciuto'}"
+        return False, f"settle failed: {s.get('errorReason') or s.get('error') or 'unknown'}"
     with LOCK:
         SETTLED.add(key)
         STATS["paid"] += 1
@@ -187,7 +187,7 @@ class H(BaseHTTPRequestHandler):
         return f"http://{host}/v1/check"
 
     def _require_payment(self):
-        """(ok, settle_response|None). In modalità gratis sempre ok."""
+        """(ok, settle_response|None). In free mode, always ok."""
         if PRICE_USDC <= 0:
             return True, None
         reqs = payment_requirements(self._resource_url())
@@ -207,14 +207,14 @@ class H(BaseHTTPRequestHandler):
 
     def _check(self, chain, address):
         if not chain or not address:
-            return self._json(400, {"error": "servono chain e address"})
+            return self._json(400, {"error": "chain and address are required"})
         ok, settle = self._require_payment()
         if not ok:
-            return  # risposta 402 già inviata
+            return  # 402 response already sent
         try:
             verdict = cached_assess(chain, address)
         except Exception as e:
-            return self._json(500, {"error": f"check fallito: {e}"})
+            return self._json(500, {"error": f"check failed: {e}"})
         extra = {"X-PAYMENT-RESPONSE": _b64json(settle), "PAYMENT-RESPONSE": _b64json(settle)} if settle else {}
         return self._json(200, verdict, extra)
 
@@ -247,16 +247,16 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", 0))
             p = json.loads(self.rfile.read(n) or b"{}")
         except Exception as e:
-            return self._json(400, {"error": f"body non valido: {e}"})
+            return self._json(400, {"error": f"invalid body: {e}"})
         self._check(str(p.get("chain", "")), str(p.get("address", "")))
 
 
 if __name__ == "__main__":
     if PRICE_USDC <= 0:
-        mode = "GRATIS (demo)"
+        mode = "FREE (demo)"
     elif FACILITATOR and PAY_TO and ASSET:
-        mode = f"{PRICE_USDC} USDC/call · x402 REALE su {NETWORK}"
+        mode = f"{PRICE_USDC} USDC/call · REAL x402 on {NETWORK}"
     else:
-        mode = f"{PRICE_USDC} USDC/call · ⚠ x402 NON configurato (mancano facilitator/pay_to/asset) → richieste a pagamento rifiutate"
-    print(f"guardbot su :{PORT}  ·  pagamento: {mode}", flush=True)
+        mode = f"{PRICE_USDC} USDC/call · WARNING x402 NOT configured (missing facilitator/pay_to/asset) -> paid requests rejected"
+    print(f"guardbot on :{PORT}  ·  payment: {mode}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
