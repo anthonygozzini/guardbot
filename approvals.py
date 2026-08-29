@@ -123,17 +123,11 @@ def _getlogs(url, owner_topic):
 
 
 def _approval_logs(name, cfg, owner_topic):
-    """Return (logs, ok). Tries Alchemy → Etherscan → permissive public RPC, in order,
-    falling through on failure. ok=False = no source could scan this chain."""
-    # 1) Alchemy — uncapped getLogs; covers every EVM chain enabled on the user's app.
-    if ALCHEMY_KEY and name in ALCHEMY_NET:
-        try:
-            r = _getlogs(f"https://{ALCHEMY_NET[name]}.g.alchemy.com/v2/{ALCHEMY_KEY}", owner_topic)
-            if r is not None:
-                return r, True
-        except Exception:
-            pass   # network not enabled on the app / transient → fall through
-    # 2) Etherscan V2 free — covers Ethereum, Arbitrum, Polygon.
+    """Return (logs, ok). Tries Etherscan → permissive public RPC, falling through on failure.
+    NOTE: Alchemy is NOT used for getLogs — its free tier caps the range at 10 blocks, useless
+    for full-history scans. (Alchemy is still used for eth_call in _chain_rpc, which is uncapped.)
+    ok=False = no source could scan this chain (reported as degraded, honestly)."""
+    # 1) Etherscan V2 free — covers Ethereum, Arbitrum, Polygon.
     if ETHERSCAN_KEY:
         url = (f"https://api.etherscan.io/v2/api?chainid={cfg['id']}&module=logs&action=getLogs"
                f"&fromBlock=0&toBlock=latest&topic0={APPROVAL_TOPIC}&topic0_1_opr=and"
@@ -361,10 +355,10 @@ def approvals(address, chain=None):
     }
     if degraded:
         out["degraded_chains"] = degraded
-        out["note"] = ("For complete multi-chain coverage set a free Alchemy key "
-                       "(GUARDBOT_ALCHEMY_KEY) — one key covers Ethereum, Base, Arbitrum, "
-                       "Optimism, Polygon, BSC. These chains couldn't be scanned with the "
-                       "current sources.")
+        out["note"] = ("These chains have no free full-history log source (Etherscan's free "
+                       "tier covers only Ethereum/Arbitrum/Polygon; Alchemy's free tier caps "
+                       "getLogs at 10 blocks). For them use a paid provider (Alchemy PAYG or "
+                       "Etherscan) or a per-chain explorer key.")
     return out
 
 
