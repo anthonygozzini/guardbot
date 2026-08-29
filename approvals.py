@@ -10,6 +10,7 @@ Read-only, no wallet connection. The "revoke" action (a signed tx) is a later st
 this is the view that tells you what to clean up.
 """
 
+import concurrent.futures
 import json
 import os
 import re
@@ -122,12 +123,91 @@ def _getlogs(url, owner_topic):
     return d["result"] if isinstance(d.get("result"), list) else None
 
 
-def _approval_logs(name, cfg, owner_topic):
-    """Return (logs, ok). Tries Etherscan → permissive public RPC, falling through on failure.
-    NOTE: Alchemy is NOT used for getLogs — its free tier caps the range at 10 blocks, useless
-    for full-history scans. (Alchemy is still used for eth_call in _chain_rpc, which is uncapped.)
+# Free public RPCs that accept ~10k-block getLogs (no key). Our own scanner uses these.
+RPC_POOL = {
+    "base": ["https://mainnet.base.org", "https://base.drpc.org"],
+    "optimism": ["https://mainnet.optimism.io", "https://optimism.drpc.org"],
+    "polygon": ["https://polygon-bor-rpc.publicnode.com"],
+    "arbitrum": ["https://arb1.arbitrum.io/rpc"],
+    # bsc: public RPCs block getLogs — the one chain still to crack.
+}
+CHUNK = 10000        # blocks per getLogs request the public RPCs accept
+SCAN_WORKERS = 20    # concurrent chunk requests
+
+
+def _nonce(rpc, owner, block="latest"):
+    r = _rpc(rpc, "eth_getTransactionCount", [owner, block])
+    return int(r, 16) if r else 0
+
+
+def _first_active_block(rpc, owner, latest):
+    """Binary-search the first block where the owner had sent a tx (nonce>0).
+    Bounds the scan to the address's real activity window instead of genesis."""
+    lo, hi = 0, latest
+    while lo < hi:
+        mid = (lo + hi) // 2
+        try:
+            n = _nonce(rpc, owner, hex(mid))
+        except Exception:
+            return 0   # can't narrow safely → scan from genesis
+        if n > 0:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def _getlogs_range(url, owner_topic, lo, hi):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
+            "params": [{"fromBlock": hex(lo), "toBlock": hex(hi),
+                        "topics": [APPROVAL_TOPIC, owner_topic]}]}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"User-Agent": UA, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        d = json.load(r)
+    return d["result"] if isinstance(d.get("result"), list) else None
+
+
+def _chunked_scan(pool, owner, owner_topic):
+    """Our own scanner: bound to the address's active window, then fan the 10k-block chunks
+    out across a pool of free RPCs in parallel. Returns the Approval logs."""
+    latest = _rpc(pool[0], "eth_blockNumber", [])
+    latest = int(latest, 16) if latest else 0
+    start = _first_active_block(pool[0], owner, latest)
+    ranges = [(b, min(b + CHUNK - 1, latest)) for b in range(start, latest + 1, CHUNK)]
+    logs = []
+
+    def scan(idx, lo, hi):
+        for k in range(len(pool) + 2):
+            url = pool[(idx + k) % len(pool)]
+            try:
+                r = _getlogs_range(url, owner_topic, lo, hi)
+                if r is not None:
+                    return r
+            except Exception:
+                time.sleep(0.25)
+        return []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS) as ex:
+        futures = [ex.submit(scan, i, lo, hi) for i, (lo, hi) in enumerate(ranges)]
+        for f in concurrent.futures.as_completed(futures):
+            logs.extend(f.result())
+    return logs
+
+
+def _approval_logs(name, cfg, owner_topic, owner):
+    """Return (logs, ok). Fast pre-check skips chains the address never used (nonce==0).
+    Otherwise: Etherscan free (Ethereum/Arbitrum/Polygon) or our own chunked scanner over a
+    free public-RPC pool. Alchemy is used only for eth_call (its free getLogs caps at 10 blocks).
     ok=False = no source could scan this chain (reported as degraded, honestly)."""
-    # 1) Etherscan V2 free — covers Ethereum, Arbitrum, Polygon.
+    rpc = _chain_rpc(name, cfg)
+    # fast pre-check: an address that never acted on this chain has no approvals here → instant.
+    try:
+        if _nonce(rpc, owner) == 0:
+            return [], True
+    except Exception:
+        pass
+    # Etherscan V2 free — covers Ethereum, Arbitrum, Polygon.
     if ETHERSCAN_KEY:
         url = (f"https://api.etherscan.io/v2/api?chainid={cfg['id']}&module=logs&action=getLogs"
                f"&fromBlock=0&toBlock=latest&topic0={APPROVAL_TOPIC}&topic0_1_opr=and"
@@ -143,20 +223,19 @@ def _approval_logs(name, cfg, owner_topic):
                 return res, True
             msg = str(d.get("message", "")).lower()
             if msg.startswith("no records"):
-                return [], True   # valid empty answer
+                return [], True
             if "rate limit" in msg or "max" in str(res).lower():
                 time.sleep(0.9)
                 continue
-            break   # chain not on the free tier / other → fall through
-    # 3) permissive public RPC (full-range getLogs, e.g. Arbitrum).
-    if cfg["logs_ok"]:
+            break   # chain not on the free tier → fall through to our scanner
+    # our own scanner over a free public-RPC pool (Base, Optimism, …).
+    pool = RPC_POOL.get(name)
+    if pool:
         try:
-            r = _getlogs(cfg["rpc"], owner_topic)
-            if r is not None:
-                return r, True
+            return _chunked_scan(pool, owner, owner_topic), True
         except Exception:
             pass
-    return [], False   # no source could scan this chain → reported as degraded, honestly
+    return [], False   # no source could scan this chain → degraded, honestly
 
 
 def _allowance(rpc, owner, token, spender):
@@ -183,9 +262,7 @@ def _evm(address):
     owner_topic = "0x" + "0" * 24 + address[2:].lower()
     items, scanned, degraded = [], [], []
     for name, cfg in EVM_CFG.items():
-        if ALCHEMY_KEY or ETHERSCAN_KEY:
-            time.sleep(0.2)    # stay under free-tier rate limits
-        logs, ok = _approval_logs(name, cfg, owner_topic)
+        logs, ok = _approval_logs(name, cfg, owner_topic, address)
         if not ok:
             degraded.append(name)
             continue
