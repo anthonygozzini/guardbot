@@ -110,24 +110,35 @@ def _rpc(url, method, params):
         return json.load(r).get("result")
 
 
+def _getlogs(url, owner_topic):
+    """eth_getLogs for Approval events; returns the log list, or None on error (not empty)."""
+    body = {"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
+            "params": [{"fromBlock": "0x0", "toBlock": "latest",
+                        "topics": [APPROVAL_TOPIC, owner_topic]}]}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"User-Agent": UA, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        d = json.load(r)
+    return d["result"] if isinstance(d.get("result"), list) else None
+
+
 def _approval_logs(name, cfg, owner_topic):
-    """Return (logs, ok). ok=False means the chain could not be scanned (needs a key)."""
+    """Return (logs, ok). Tries Alchemy → Etherscan → permissive public RPC, in order,
+    falling through on failure. ok=False = no source could scan this chain."""
+    # 1) Alchemy — uncapped getLogs; covers every EVM chain enabled on the user's app.
     if ALCHEMY_KEY and name in ALCHEMY_NET:
-        url = f"https://{ALCHEMY_NET[name]}.g.alchemy.com/v2/{ALCHEMY_KEY}"
-        for _ in range(3):
-            try:
-                logs = _rpc(url, "eth_getLogs",
-                            [{"fromBlock": "0x0", "toBlock": "latest",
-                              "topics": [APPROVAL_TOPIC, owner_topic]}])
-                return (logs or []), True
-            except Exception:
-                time.sleep(0.5)
-        return [], False
+        try:
+            r = _getlogs(f"https://{ALCHEMY_NET[name]}.g.alchemy.com/v2/{ALCHEMY_KEY}", owner_topic)
+            if r is not None:
+                return r, True
+        except Exception:
+            pass   # network not enabled on the app / transient → fall through
+    # 2) Etherscan V2 free — covers Ethereum, Arbitrum, Polygon.
     if ETHERSCAN_KEY:
         url = (f"https://api.etherscan.io/v2/api?chainid={cfg['id']}&module=logs&action=getLogs"
                f"&fromBlock=0&toBlock=latest&topic0={APPROVAL_TOPIC}&topic0_1_opr=and"
                f"&topic1={owner_topic}&apikey={ETHERSCAN_KEY}")
-        for attempt in range(4):
+        for _ in range(4):
             try:
                 d = _get(url)
             except Exception:
@@ -139,21 +150,19 @@ def _approval_logs(name, cfg, owner_topic):
             msg = str(d.get("message", "")).lower()
             if msg.startswith("no records"):
                 return [], True   # valid empty answer
-            # rate limit / busy on the free tier → back off and retry
-            if "rate limit" in msg or "max" in str(res).lower() or str(d.get("status")) == "0":
+            if "rate limit" in msg or "max" in str(res).lower():
                 time.sleep(0.9)
                 continue
-            return [], False
-        return [], False
+            break   # chain not on the free tier / other → fall through
+    # 3) permissive public RPC (full-range getLogs, e.g. Arbitrum).
     if cfg["logs_ok"]:
         try:
-            logs = _rpc(cfg["rpc"], "eth_getLogs",
-                        [{"fromBlock": "0x0", "toBlock": "latest",
-                          "topics": [APPROVAL_TOPIC, owner_topic]}])
-            return (logs or []), True
+            r = _getlogs(cfg["rpc"], owner_topic)
+            if r is not None:
+                return r, True
         except Exception:
-            return [], False
-    return [], False   # no key + RPC won't do full range → degraded, reported honestly
+            pass
+    return [], False   # no source could scan this chain → reported as degraded, honestly
 
 
 def _allowance(rpc, owner, token, spender):

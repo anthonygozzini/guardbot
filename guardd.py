@@ -175,13 +175,16 @@ class H(BaseHTTPRequestHandler):
 
     def _json(self, code, obj, extra=None):
         body = json.dumps(obj, ensure_ascii=False, indent=2).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        for k, v in (extra or {}).items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # client disconnected (e.g. refreshed / navigated) — ignore
 
     def _resource_url(self):
         host = self.headers.get("Host", f"127.0.0.1:{PORT}")
@@ -281,5 +284,8 @@ if __name__ == "__main__":
         mode = f"{PRICE_USDC} USDC/call · REAL x402 on {NETWORK}"
     else:
         mode = f"{PRICE_USDC} USDC/call · WARNING x402 NOT configured (missing facilitator/pay_to/asset) -> paid requests rejected"
-    print(f"guardbot on :{PORT}  ·  payment: {mode}", flush=True)
+    print(f"\n  GuardBot running  ·  payment: {mode}", flush=True)
+    print(f"  ➜  Approvals viewer:  http://127.0.0.1:{PORT}/view", flush=True)
+    print(f"  ➜  API / agents:      http://127.0.0.1:{PORT}/llms.txt", flush=True)
+    print("  (Ctrl+C to stop)\n", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
