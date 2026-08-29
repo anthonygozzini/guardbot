@@ -254,13 +254,15 @@ class H(BaseHTTPRequestHandler):
             q = parse_qs(u.query)
             self._check((q.get("chain") or [""])[0], (q.get("address") or [""])[0])
         elif u.path == "/v1/approvals":
-            # local-first & private: query live, per request. Nothing is stored or published.
+            # local-first & private: nothing is stored server-side or published. cached=1 returns
+            # the local index's last result instantly (µs); otherwise a live scan (~seconds).
             q = parse_qs(u.query)
             addr = (q.get("address") or [""])[0].strip()
+            cached = (q.get("cached") or ["0"])[0] in ("1", "true", "yes")
             if not addr:
                 return self._json(400, {"error": "address is required"})
             try:
-                self._json(200, approvals_mod.approvals(addr))
+                self._json(200, approvals_mod.approvals(addr, cached_only=cached))
             except Exception as e:
                 self._json(500, {"error": f"approvals lookup failed: {e}"})
         else:

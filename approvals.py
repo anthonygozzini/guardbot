@@ -13,8 +13,12 @@ this is the view that tells you what to clean up.
 import concurrent.futures
 import json
 import os
+import queue
 import re
+import sqlite3
+import threading
 import time
+import urllib.error
 import urllib.request
 
 
@@ -131,8 +135,18 @@ RPC_POOL = {
     "arbitrum": ["https://arb1.arbitrum.io/rpc"],
     # bsc: public RPCs block getLogs — the one chain still to crack.
 }
-CHUNK = 10000        # blocks per getLogs request the public RPCs accept
-SCAN_WORKERS = 20    # concurrent chunk requests
+# Adaptive scanning: start WIDE (owner-filtered queries return few logs, so a huge block
+# range passes in one call) and split only when a provider says the response is too large.
+# A normal wallet collapses full history into a handful of calls; a bot with thousands of
+# approvals self-subdivides down to MIN_SPAN. No fixed 10k-chunk march over dead history.
+INIT_SPAN = 3_000_000   # first attempt span per range
+MIN_SPAN = 5_000        # floor before we accept a possibly-capped result at a dense range
+RESULT_CAP = 9500       # provider silently caps ~10k logs → treat as "split me"
+SCAN_WORKERS = 24       # concurrent range workers
+# provider phrasings for "your range/response is too big — narrow it" (→ split, don't fail)
+_TOOBIG = ("too large", "more than", "limit exceeded", "response size", "query timeout",
+           "block range", "range is too", "exceeds", "result set", "too many", "10000",
+           "up to a", "requested too", "logs matched")
 
 
 def _nonce(rpc, owner, block="latest"):
@@ -157,60 +171,238 @@ def _first_active_block(rpc, owner, latest):
     return lo
 
 
-def _getlogs_range(url, owner_topic, lo, hi):
+def _getlogs_try(url, owner_topic, lo, hi):
+    """One owner-filtered getLogs. Returns ('ok', logs) | ('toobig', None) | ('err', None).
+    'toobig' means the RANGE was too wide for the provider (split it), not a real failure."""
     body = {"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
             "params": [{"fromBlock": hex(lo), "toBlock": hex(hi),
                         "topics": [APPROVAL_TOPIC, owner_topic]}]}
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"User-Agent": UA, "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-        d = json.load(r)
-    return d["result"] if isinstance(d.get("result"), list) else None
-
-
-def _chunked_scan(pool, owner, owner_topic):
-    """Our own scanner: bound to the address's active window, then fan the 10k-block chunks
-    out across a pool of free RPCs in parallel. Returns the Approval logs."""
-    latest = _rpc(pool[0], "eth_blockNumber", [])
-    latest = int(latest, 16) if latest else 0
-    start = _first_active_block(pool[0], owner, latest)
-    ranges = [(b, min(b + CHUNK - 1, latest)) for b in range(start, latest + 1, CHUNK)]
-    logs = []
-
-    def scan(idx, lo, hi):
-        for k in range(len(pool) + 2):
-            url = pool[(idx + k) % len(pool)]
-            try:
-                r = _getlogs_range(url, owner_topic, lo, hi)
-                if r is not None:
-                    return r
-            except Exception:
-                time.sleep(0.25)
-        return []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS) as ex:
-        futures = [ex.submit(scan, i, lo, hi) for i, (lo, hi) in enumerate(ranges)]
-        for f in concurrent.futures.as_completed(futures):
-            logs.extend(f.result())
-    return logs
-
-
-def _approval_logs(name, cfg, owner_topic, owner):
-    """Return (logs, ok). Fast pre-check skips chains the address never used (nonce==0).
-    Otherwise: Etherscan free (Ethereum/Arbitrum/Polygon) or our own chunked scanner over a
-    free public-RPC pool. Alchemy is used only for eth_call (its free getLogs caps at 10 blocks).
-    ok=False = no source could scan this chain (reported as degraded, honestly)."""
-    rpc = _chain_rpc(name, cfg)
-    # fast pre-check: an address that never acted on this chain has no approvals here → instant.
     try:
-        if _nonce(rpc, owner) == 0:
-            return [], True
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            txt = e.read().decode()[:400].lower()
+        except Exception:
+            txt = str(e).lower()
+        return ("toobig" if any(s in txt for s in _TOOBIG) else "err"), None
     except Exception:
-        pass
-    # Etherscan V2 free — covers Ethereum, Arbitrum, Polygon.
+        return "err", None
+    if isinstance(d.get("result"), list):
+        return "ok", d["result"]
+    msg = str((d.get("error") or {}).get("message", "")).lower()
+    return ("toobig" if any(s in msg for s in _TOOBIG) else "err"), None
+
+
+MAX_TRIES = 3   # per-range retries on transient RPC errors before recording an honest gap
+
+
+def _chunked_scan(pool, owner_topic, start, latest):
+    """Adaptive parallel scanner over a free-RPC pool. Seeds wide ranges; for each range it tries
+    EVERY RPC in the pool (they disagree on limits) before deciding. A range all providers reject
+    as too large is split; one that keeps erroring after retries is recorded as a GAP, never
+    dropped silently. Returns (logs, gaps) — gaps make the chain 'partial', not falsely clean."""
+    if latest <= 0 or start > latest:
+        return [], []
+    work = queue.Queue()
+
+    def put(lo, hi, tries=0):
+        work.put((lo, hi, tries))
+
+    b = start
+    while b <= latest:
+        put(b, min(b + INIT_SPAN - 1, latest))
+        b += INIT_SPAN
+    logs, gaps, lock = [], [], threading.Lock()
+    rr = [0]
+    rr_lock = threading.Lock()
+
+    def next_url():
+        with rr_lock:
+            u = pool[rr[0] % len(pool)]
+            rr[0] += 1
+        return u
+
+    def split(lo, hi):
+        mid = (lo + hi) // 2
+        put(lo, mid)
+        put(mid + 1, hi)
+
+    def worker():
+        while True:
+            item = work.get()
+            if item is None:
+                work.task_done()
+                return
+            lo, hi, tries = item
+            span = hi - lo + 1
+            ok_logs, toobig = None, False
+            for _ in range(len(pool)):        # try EVERY provider before giving up on this range
+                st, got = _getlogs_try(next_url(), owner_topic, lo, hi)
+                if st == "ok":
+                    ok_logs = got
+                    break
+                if st == "toobig":
+                    toobig = True             # this provider can't, but another might → keep trying
+            if ok_logs is not None:
+                if len(ok_logs) >= RESULT_CAP and span > 1:
+                    split(lo, hi)             # silently capped → subdivide
+                else:
+                    with lock:
+                        logs.extend(ok_logs)
+            elif toobig and span > MIN_SPAN:
+                split(lo, hi)
+            elif toobig:
+                with lock:
+                    gaps.append((lo, hi))     # dense sub-floor window no free RPC would serve
+            elif tries + 1 < MAX_TRIES:
+                time.sleep(0.3)
+                put(lo, hi, tries + 1)        # transient error → retry
+            else:
+                with lock:
+                    gaps.append((lo, hi))     # persistent error → honest gap, not silent loss
+            work.task_done()
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(SCAN_WORKERS)]
+    for t in threads:
+        t.start()
+    work.join()
+    for _ in threads:
+        work.put(None)
+    for t in threads:
+        t.join()
+    return logs, gaps
+
+
+# ---------------- local incremental index (private, on your disk) ----------------
+# Repeat scans read cached (token,spender) pairs and re-scan ONLY the blocks added since last
+# time, so a re-check is milliseconds instead of a full-history sweep. The DB lives OUTSIDE the
+# repo in ~/.guardbot (never committed, never uploaded); disable with GUARDBOT_NO_CACHE=1.
+_CACHE_OFF = os.environ.get("GUARDBOT_NO_CACHE", "") not in ("", "0", "false")
+_DB_PATH = os.environ.get("GUARDBOT_CACHE",
+                          os.path.join(os.path.expanduser("~"), ".guardbot", "approvals.db"))
+_db_lock = threading.Lock()
+_DB = None
+
+
+def _db():
+    global _DB
+    if _CACHE_OFF:
+        return None
+    if _DB is None:
+        try:
+            os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
+            c = sqlite3.connect(_DB_PATH, check_same_thread=False)
+            c.execute("CREATE TABLE IF NOT EXISTS pairs(chain TEXT, owner TEXT, token TEXT,"
+                      " spender TEXT, PRIMARY KEY(chain, owner, token, spender))")
+            c.execute("CREATE TABLE IF NOT EXISTS state(chain TEXT, owner TEXT,"
+                      " last_block INTEGER, PRIMARY KEY(chain, owner))")
+            c.execute("CREATE TABLE IF NOT EXISTS result(owner TEXT PRIMARY KEY,"
+                      " blob TEXT, ts REAL)")
+            _DB = c
+        except Exception:
+            return None
+    return _DB
+
+
+def _cached(chain, owner):
+    """(set_of_(token,spender), last_scanned_block_or_None) from the local index."""
+    db = _db()
+    if db is None:
+        return set(), None
+    owner = owner.lower()
+    with _db_lock:
+        try:
+            pr = db.execute("SELECT token, spender FROM pairs WHERE chain=? AND owner=?",
+                            (chain, owner)).fetchall()
+            st = db.execute("SELECT last_block FROM state WHERE chain=? AND owner=?",
+                            (chain, owner)).fetchone()
+        except Exception:
+            return set(), None
+    return {(t, s) for t, s in pr}, (st[0] if st else None)
+
+
+def _store(chain, owner, pairs, last_block):
+    db = _db()
+    if db is None:
+        return
+    owner = owner.lower()
+    with _db_lock:
+        try:
+            db.executemany("INSERT OR IGNORE INTO pairs(chain, owner, token, spender)"
+                           " VALUES(?,?,?,?)", [(chain, owner, t, s) for t, s in pairs])
+            db.execute("INSERT OR REPLACE INTO state(chain, owner, last_block) VALUES(?,?,?)",
+                       (chain, owner, int(last_block)))
+            db.commit()
+        except Exception:
+            pass
+
+
+def _store_result(owner, out):
+    db = _db()
+    if db is None:
+        return
+    with _db_lock:
+        try:
+            db.execute("INSERT OR REPLACE INTO result(owner, blob, ts) VALUES(?,?,?)",
+                       (owner.lower(), json.dumps(out), time.time()))
+            db.commit()
+        except Exception:
+            pass
+
+
+def _load_result(owner):
+    """Last full result for this owner from the local index, or None. For instant paint."""
+    db = _db()
+    if db is None:
+        return None
+    with _db_lock:
+        try:
+            row = db.execute("SELECT blob, ts FROM result WHERE owner=?",
+                             (owner.lower(),)).fetchone()
+        except Exception:
+            return None
+    if not row:
+        return None
+    try:
+        out = json.loads(row[0])
+    except Exception:
+        return None
+    out["stale"] = True
+    out["cached_age_s"] = int(time.time() - (row[1] or 0))
+    return out
+
+
+def _block_number(rpc):
+    try:
+        bn = _rpc(rpc, "eth_blockNumber", [])
+        return int(bn, 16) if bn else 0
+    except Exception:
+        return 0
+
+
+def _approval_logs(name, cfg, owner_topic, owner, from_block=0):
+    """Return (logs, latest_block, ok, partial) for Approval events in [from_block, latest].
+    from_block=0 = full history; >0 = incremental (only new blocks, driven by the local index).
+    Fast pre-check skips fresh scans of chains the address never used (nonce==0). Source order:
+    Etherscan free (Ethereum/Arbitrum/Polygon) → our own adaptive scanner over a free public-RPC
+    pool. Alchemy is used only for eth_call (its free getLogs caps at 10 blocks).
+    ok=False = no source could scan this chain (degraded). partial=True = scanned but some block
+    ranges could not be read (reported, never silently treated as clean)."""
+    rpc = _chain_rpc(name, cfg)
+    latest = _block_number(rpc)
+    if from_block == 0:
+        try:
+            if _nonce(rpc, owner) == 0:
+                return [], latest, True, False   # never acted here → no approvals possible
+        except Exception:
+            pass
+    # Etherscan V2 free — covers Ethereum, Arbitrum, Polygon; honors incremental fromBlock.
     if ETHERSCAN_KEY:
         url = (f"https://api.etherscan.io/v2/api?chainid={cfg['id']}&module=logs&action=getLogs"
-               f"&fromBlock=0&toBlock=latest&topic0={APPROVAL_TOPIC}&topic0_1_opr=and"
+               f"&fromBlock={from_block}&toBlock=latest&topic0={APPROVAL_TOPIC}&topic0_1_opr=and"
                f"&topic1={owner_topic}&apikey={ETHERSCAN_KEY}")
         for _ in range(4):
             try:
@@ -220,22 +412,24 @@ def _approval_logs(name, cfg, owner_topic, owner):
                 continue
             res = d.get("result")
             if isinstance(res, list):
-                return res, True
+                return res, latest, True, False
             msg = str(d.get("message", "")).lower()
             if msg.startswith("no records"):
-                return [], True
+                return [], latest, True, False
             if "rate limit" in msg or "max" in str(res).lower():
                 time.sleep(0.9)
                 continue
             break   # chain not on the free tier → fall through to our scanner
-    # our own scanner over a free public-RPC pool (Base, Optimism, …).
+    # our own adaptive scanner over a free public-RPC pool (Base, Optimism, …).
     pool = RPC_POOL.get(name)
     if pool:
+        start = from_block if from_block > 0 else _first_active_block(rpc, owner, latest)
         try:
-            return _chunked_scan(pool, owner, owner_topic), True
+            logs, gaps = _chunked_scan(pool, owner_topic, start, latest)
+            return logs, latest, True, bool(gaps)
         except Exception:
             pass
-    return [], False   # no source could scan this chain → degraded, honestly
+    return [], latest, False, False   # no source could scan this chain → degraded, honestly
 
 
 def _allowance(rpc, owner, token, spender):
@@ -258,36 +452,85 @@ def _symbol(rpc, token):
     return None
 
 
-def _evm(address):
-    owner_topic = "0x" + "0" * 24 + address[2:].lower()
-    items, scanned, degraded = [], [], []
-    for name, cfg in EVM_CFG.items():
-        logs, ok = _approval_logs(name, cfg, owner_topic, address)
-        if not ok:
-            degraded.append(name)
-            continue
-        scanned.append(name)
-        rpc = _chain_rpc(name, cfg)
-        pairs = {}
+def _resolve_pairs(rpc, name, owner, pairs):
+    """Live allowance for every known (token,spender) pair, in parallel. cur==0 = revoked
+    (skip); this is the current on-chain truth, re-checked every scan even when pairs are cached."""
+    if not pairs:
+        return []
+    sym_cache, sym_lock = {}, threading.Lock()
+
+    def symbol(token):
+        with sym_lock:
+            if token in sym_cache:
+                return sym_cache[token]
+        s = _symbol(rpc, token)
+        with sym_lock:
+            sym_cache[token] = s
+        return s
+
+    def resolve(pair):
+        token, spender = pair
+        cur = _allowance(rpc, owner, token, spender)
+        if cur == 0:
+            return None   # revoked / zero — nothing to clean
+        unlimited = cur >= UNLIMITED
+        return {
+            "chain": name, "kind": "approval",
+            "token": token, "token_symbol": symbol(token),
+            "spender": spender,
+            "amount": "unknown" if cur < 0 else ("unlimited" if unlimited else str(cur)),
+            "unlimited": unlimited, "risky": unlimited,
+            "evidence": {"current_allowance_raw": None if cur < 0 else str(cur)},
+        }
+
+    out = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(pairs))) as ex:
+        for r in ex.map(resolve, list(pairs)):
+            if r is not None:
+                out.append(r)
+    return out
+
+
+def _scan_chain(name, cfg, owner_topic, address):
+    """One chain's whole pipeline (index read → incremental scan → live allowance).
+    Returns (name, status, items) with status in {'scanned','partial','cached','degraded'}."""
+    pairs, last = _cached(name, address)
+    from_block = (last + 1) if last is not None else 0
+    logs, latest, ok, partial = _approval_logs(name, cfg, owner_topic, address, from_block)
+    if not ok:
+        if not pairs:
+            return name, "degraded", []
+        status = "cached"        # live scan down; show last-known pairs
+    else:
         for lg in logs:
             topics = lg.get("topics") or []
             if len(topics) < 3:
-                continue   # only indexed Approval(owner,spender); skip Permit-style
-            pairs[(lg["address"].lower(), "0x" + topics[2][-40:])] = 1
-        for token, spender in pairs:
-            cur = _allowance(rpc, address, token, spender)
-            if cur == 0:
-                continue   # revoked / zero — nothing to clean
-            unlimited = cur >= UNLIMITED
-            items.append({
-                "chain": name, "kind": "approval",
-                "token": token, "token_symbol": _symbol(rpc, token),
-                "spender": spender,
-                "amount": "unknown" if cur < 0 else ("unlimited" if unlimited else str(cur)),
-                "unlimited": unlimited, "risky": unlimited,
-                "evidence": {"current_allowance_raw": None if cur < 0 else str(cur)},
-            })
-    return items, scanned, degraded
+                continue          # only indexed Approval(owner,spender); skip Permit-style
+            pairs.add((lg["address"].lower(), "0x" + topics[2][-40:]))
+        # only advance the index watermark on a COMPLETE scan; a partial one must re-scan.
+        if not partial:
+            _store(name, address, pairs, latest)
+        status = "partial" if partial else "scanned"
+    items = _resolve_pairs(_chain_rpc(name, cfg), name, address, pairs)
+    return name, status, items
+
+
+def _evm(address):
+    owner_topic = "0x" + "0" * 24 + address[2:].lower()
+    items, scanned, degraded, partial = [], [], [], []
+    # fan every chain out concurrently: wall-clock = the slowest single chain, not the sum.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVM_CFG)) as ex:
+        results = ex.map(lambda kv: _scan_chain(kv[0], kv[1], owner_topic, address),
+                         list(EVM_CFG.items()))
+    for name, status, chain_items in results:
+        if status == "degraded":
+            degraded.append(name)
+            continue
+        if status == "partial":
+            partial.append(name)
+        scanned.append(name if status == "scanned" else name + " (" + status + ")")
+        items.extend(chain_items)
+    return items, scanned, degraded, partial
 
 
 # ---------------- TRON via TronScan ----------------
@@ -387,13 +630,16 @@ def _spender_trust(chain, spender):
 
 
 def _score_items(items):
-    """Attach a graded risk_level (0-100 + label) to each item: exposure + spender trust."""
+    """Attach a graded risk_level (0-100 + label) to each item: exposure + spender trust.
+    The spender-trust lookups (GoPlus HTTP) run in parallel over the unique spenders."""
+    keys = {(it["chain"], (it.get("spender") or "").lower()) for it in items}
     cache = {}
+    if keys:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(keys))) as ex:
+            for k, v in ex.map(lambda k: (k, _spender_trust(k[0], k[1])), list(keys)):
+                cache[k] = v
     for it in items:
-        chain = it["chain"]
-        key = (chain, (it.get("spender") or "").lower())
-        if key not in cache:
-            cache[key] = _spender_trust(chain, it.get("spender"))
+        key = (it["chain"], (it.get("spender") or "").lower())
         trust, name = cache[key]
         exposure = 40 if it.get("unlimited") else (30 if it.get("kind") == "delegate" else 10)
         score = max(0, min(100, exposure + {"legit": -20, "malicious": 60, "unknown": 25}[trust]))
@@ -405,12 +651,21 @@ def _score_items(items):
     return items
 
 
-def approvals(address, chain=None):
+def approvals(address, chain=None, cached_only=False):
     address = str(address).strip()
     kind = chain or detect_chain(address)
-    degraded = []
+    if cached_only:
+        # instant paint: return the last stored result with no network call (true ms),
+        # marked stale so the caller can refresh live in the background.
+        hit = _load_result(address)
+        return hit if hit is not None else {"address": address, "address_type": kind,
+                                            "stale": True, "cached_age_s": None,
+                                            "chains_scanned": [], "count": 0, "risky_count": 0,
+                                            "levels": {lv: 0 for lv in LEVELS}, "items": [],
+                                            "note": "no cached result yet — run a live scan"}
+    degraded, partial = [], []
     if kind == "evm":
-        items, scanned, degraded = _evm(address)
+        items, scanned, degraded, partial = _evm(address)
     elif kind == "tron":
         items, scanned = _tron(address)
     elif kind == "solana":
@@ -436,6 +691,12 @@ def approvals(address, chain=None):
                        "tier covers only Ethereum/Arbitrum/Polygon; Alchemy's free tier caps "
                        "getLogs at 10 blocks). For them use a paid provider (Alchemy PAYG or "
                        "Etherscan) or a per-chain explorer key.")
+    if partial:
+        out["partial_chains"] = partial
+        out["partial_note"] = ("Some block ranges on these chains could not be read from the free "
+                               "RPC pool, so their approval list may be incomplete — not a clean "
+                               "bill. Re-scan, or add a keyed provider, for full coverage.")
+    _store_result(address, out)   # cache full result for instant paint on the next look-up
     return out
 
 

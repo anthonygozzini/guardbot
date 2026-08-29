@@ -25,6 +25,11 @@ th{text-align:left;color:var(--faint);font-weight:500;font-size:.72rem;text-tran
 td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
 .mono{font-family:var(--mono);font-size:.82rem}
 .chip{display:inline-block;font-family:var(--mono);font-size:.68rem;padding:2px 7px;border-radius:100px;border:1px solid var(--line);color:var(--soft)}
+.tag{display:inline-block;font-family:var(--mono);font-size:.66rem;padding:2px 8px;border-radius:100px;font-weight:600;margin-right:6px;vertical-align:middle}
+.tag-cached{background:#2a1f0f;color:var(--warn);animation:pulse 1.1s ease-in-out infinite}
+.tag-live{background:#0d2a20;color:var(--accent)}
+@keyframes pulse{50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.tag-cached{animation:none}}
 .badge{font-family:var(--mono);font-size:.68rem;padding:2px 8px;border-radius:100px;font-weight:600}
 .b-unl{background:#2c1613;color:var(--risk)}
 .b-risk{background:#2a1f0f;color:var(--warn)}
@@ -53,39 +58,56 @@ a{color:var(--accent)}
 var f=document.getElementById('f'),addr=document.getElementById('addr'),go=document.getElementById('go'),out=document.getElementById('out');
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function short(s){s=String(s||'');return s.length>18?s.slice(0,8)+'…'+s.slice(-6):s;}
+function render(d,mode){
+  if(d.error){out.innerHTML='<div class="err">'+esc(d.error)+'</div>';return;}
+  var scanned=(d.chains_scanned||[]).join(', ');
+  var tag=mode==='cached'
+    ? '<span class="tag tag-cached">cached'+(d.cached_age_s!=null?' · '+d.cached_age_s+'s ago':'')+' · refreshing…</span>'
+    : '<span class="tag tag-live">live</span>';
+  var head='<div class="status">'+tag+' <b>'+esc(d.address_type)+'</b> · scanned <b>'+esc(scanned||d.address_type)+'</b> · '
+    +'<b>'+d.count+'</b> approvals, <b style="color:var(--risk)">'+d.risky_count+'</b> risky</div>';
+  if(d.degraded_chains&&d.degraded_chains.length){
+    var note=d.note||'Add a free Alchemy key (GUARDBOT_ALCHEMY_KEY) in your local .env for full coverage.';
+    head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
+      +d.degraded_chains.length+' EVM chains not scanned ('+esc(d.degraded_chains.join(', '))
+      +'). '+esc(note)+'</div>';
+  }
+  if(d.partial_chains&&d.partial_chains.length){
+    head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
+      +'Partial scan on '+esc(d.partial_chains.join(', '))+' — some block ranges could not be read, '
+      +'so this list may be incomplete (not a clean bill). Re-scan for full coverage.</div>';
+  }
+  if(!d.items||!d.items.length){out.innerHTML=head+'<div class="empty">No standing approvals found here. ✅</div>';return;}
+  var rows=d.items.map(function(i){
+    var lv=i.risk_level||'medium';
+    var badge='<span class="lvl lvl-'+esc(lv)+'">'+esc(lv)+' · '+(i.risk_score==null?'?':i.risk_score)+'</span>'
+      +(i.unlimited?' <span class="chip" title="unlimited allowance">∞</span>':'');
+    var spend=i.spender_name
+      ? '<span title="'+esc(i.spender)+'">'+esc(i.spender_name)+'</span> <span class="chip">known</span>'
+      : '<span class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</span>'
+        +(i.spender_trust==='unknown'?' <span class="chip">unknown</span>':'');
+    return '<tr><td><span class="chip">'+esc(i.chain)+'</span></td>'
+      +'<td>'+esc(i.token_symbol||'—')+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
+      +'<td>'+spend+'</td>'
+      +'<td class="mono">'+esc(i.kind)+'</td>'
+      +'<td>'+badge+'</td></tr>';
+  }).join('');
+  out.innerHTML=head+'<table><thead><tr><th>Chain</th><th>Token</th><th>Spender</th><th>Type</th><th>Risk</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
 f.addEventListener('submit',function(e){
   e.preventDefault();
   var a=addr.value.trim(); if(!a)return;
   go.disabled=true; out.innerHTML='<div class="status">Scanning…</div>';
-  fetch('/v1/approvals?address='+encodeURIComponent(a)).then(function(r){return r.json();}).then(function(d){
-    go.disabled=false;
-    if(d.error){out.innerHTML='<div class="err">'+esc(d.error)+'</div>';return;}
-    var scanned=(d.chains_scanned||[]).join(', ');
-    var head='<div class="status"><b>'+esc(d.address_type)+'</b> address · scanned <b>'+esc(scanned||d.address_type)+'</b> · '
-      +'<b>'+d.count+'</b> approvals, <b style="color:var(--risk)">'+d.risky_count+'</b> risky</div>';
-    if(d.degraded_chains&&d.degraded_chains.length){
-      var note=d.note||'Add a free Alchemy key (GUARDBOT_ALCHEMY_KEY) in your local .env for full coverage.';
-      head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
-        +d.degraded_chains.length+' EVM chains not scanned ('+esc(d.degraded_chains.join(', '))
-        +'). '+esc(note)+'</div>';
-    }
-    if(!d.items||!d.items.length){out.innerHTML=head+'<div class="empty">No standing approvals found here. ✅</div>';return;}
-    var rows=d.items.map(function(i){
-      var lv=i.risk_level||'medium';
-      var badge='<span class="lvl lvl-'+esc(lv)+'">'+esc(lv)+' · '+(i.risk_score==null?'?':i.risk_score)+'</span>'
-        +(i.unlimited?' <span class="chip" title="unlimited allowance">∞</span>':'');
-      var spend=i.spender_name
-        ? '<span title="'+esc(i.spender)+'">'+esc(i.spender_name)+'</span> <span class="chip">known</span>'
-        : '<span class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</span>'
-          +(i.spender_trust==='unknown'?' <span class="chip">unknown</span>':'');
-      return '<tr><td><span class="chip">'+esc(i.chain)+'</span></td>'
-        +'<td>'+esc(i.token_symbol||'—')+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
-        +'<td>'+spend+'</td>'
-        +'<td class="mono">'+esc(i.kind)+'</td>'
-        +'<td>'+badge+'</td></tr>';
-    }).join('');
-    out.innerHTML=head+'<table><thead><tr><th>Chain</th><th>Token</th><th>Spender</th><th>Type</th><th>Risk</th></tr></thead><tbody>'+rows+'</tbody></table>';
-  }).catch(function(err){go.disabled=false;out.innerHTML='<div class="err">Request failed: '+esc(err.message)+'. Is the server running?</div>';});
+  function live(){
+    fetch('/v1/approvals?address='+encodeURIComponent(a)).then(function(r){return r.json();}).then(function(d){
+      go.disabled=false; render(d,'live');
+    }).catch(function(err){go.disabled=false;out.innerHTML='<div class="err">Request failed: '+esc(err.message)+'. Is the server running?</div>';});
+  }
+  // phase 1 — instant paint from the local index (µs); may be empty on a first-ever look-up
+  fetch('/v1/approvals?cached=1&address='+encodeURIComponent(a)).then(function(r){return r.json();}).then(function(d){
+    if(d&&!d.error&&d.items&&d.items.length) render(d,'cached');
+    live();
+  }).catch(live);
 });
 </script>
 </body></html>

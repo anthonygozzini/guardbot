@@ -27,26 +27,38 @@ GuardBot does both sides of safety:
 - `guardd.py` — HTTP daemon: `/v1/check`, `/v1/approvals`, `/view` (browser UI), x402 payments.
 - `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` as a tool.
 
-### Approvals viewer — local-first & private
+### Approvals viewer — local-first, private, and fast
 ```bash
 python3 guardd.py            # then open http://127.0.0.1:8403/view
 python3 approvals.py 0x…     # or TRON T… / Solana base58
 ```
-**Runs entirely on your machine. Queries are live and ephemeral — nothing is stored, cached,
-or published.** No server sees which address you look up (unlike a hosted checker).
+**Runs entirely on your machine.** The browser paints the last result from your local index
+**instantly** (microseconds), then refreshes it with a live scan. No hosted server ever sees
+which address you look up.
 
-For complete EVM coverage, bring your own free **Alchemy key** (one key covers Ethereum, Base,
-Arbitrum, Optimism, Polygon, BSC) — Alchemy's `getLogs` limits by result count, not block range,
-so an owner-filtered Approval query passes over full history:
+**Speed — minutes → seconds → microseconds.** Listing every approval means reading historical
+`Approval` events, which base-layer RPCs don't index. A naïve full-history sweep is minutes/chain.
+GuardBot's own scanner instead:
+- **skips dead chains instantly** — `eth_getTransactionCount == 0` means the address never acted
+  there, so no approval is possible (a binary search on the nonce also bounds the active window);
+- **adaptive parallel scan** — seeds wide block ranges across a pool of free public RPCs and only
+  splits a range when a provider rejects it as too large, trying *every* pool RPC before giving up.
+  A range no free RPC will serve is reported as a **partial** scan, never silently dropped;
+- **local incremental index** (`~/.guardbot`, private, outside the repo, never uploaded) — the
+  first scan is seconds; every re-scan reads cached `(token,spender)` pairs and only the blocks
+  added since, and an instant cached paint is ~microseconds. Disable with `GUARDBOT_NO_CACHE=1`.
+
+Result on a normal wallet: full multi-chain live scan in ~2s, cached re-open in <1ms.
+
+**Coverage & honesty.** Ethereum / Arbitrum / Polygon use the free **Etherscan V2** key
+(`GUARDBOT_ETHERSCAN_KEY`); Base / Optimism / Polygon use the built-in free-RPC scanner. **BSC has
+no free `getLogs`** (every public BSC RPC returns `limit exceeded`), so it is reported as
+`degraded` until you add a keyed provider — never counted as clean. Keys live only in your local
+`.env` (gitignored, never shipped):
 ```bash
-echo 'GUARDBOT_ALCHEMY_KEY=<your key>' >> .env   # .env is gitignored, never shipped
-python3 guardd.py
+echo 'GUARDBOT_ETHERSCAN_KEY=<your key>' >> .env   # free, covers eth/arbitrum/polygon
+echo 'GUARDBOT_ALCHEMY_KEY=<your key>'   >> .env   # used for eth_call (allowance/symbol)
 ```
-The key lives only in your local `.env`, never in the code or the repo — **bring-your-own-key**.
-Without it, only chains whose public RPC allows full-history `getLogs` are scanned (e.g. Arbitrum);
-the rest are reported as `degraded`, never silently missed. (This is why free-tier token-security
-APIs miss approvals: reading Approval events across full history needs an indexed provider or
-your own node — that's the data source you plug in, under your control.)
 
 ## Run
 ```bash
@@ -85,6 +97,9 @@ Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalan
       tested end-to-end.
 - [x] Local-first approvals viewer (`/v1/approvals`, `/view`) across EVM + TRON + Solana —
       live, private, bring-your-own-key; the "fix" side of the "prevent" side.
+- [x] Own multi-chain scanner: nonce-skip + adaptive parallel `getLogs` + local incremental
+      index (µs cached paint → ~2s live), partial ranges surfaced, never silently dropped.
+- [ ] BSC full-history source (no free `getLogs`; needs a keyed provider).
 - [ ] Revoke action (signed tx via WalletConnect).
 - [ ] VibeKit plug-in packaging + example agent.
 - [ ] Multi-chain expansion + latency SLA.
