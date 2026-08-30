@@ -22,8 +22,18 @@ import sys
 import urllib.request
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE)
+from keccak import topic as _topic
 OUT = os.path.join(BASE, "probe_universe.json")
 APPROVAL_TOPIC = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
+# Candidate universes are mined per KIND, because an ERC-20 allowance, an NFT operator and a
+# Permit2 grant are different objects with different events and different live checks.
+KIND_TOPICS = {
+    "erc20": ("0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", None),
+    "nft": (_topic("ApprovalForAll(address,address,bool)"), None),
+    "permit2": (_topic("Approval(address,address,address,uint160,uint48)"),
+                "0x000000000022d473030f116ddee9f6b43ac78ba3"),
+}
 UA = "Mozilla/5.0 (guardbot/0.1; universe miner; read-only)"
 
 # RPCs that serve getLogs on SMALL windows — enough to SAMPLE, not to scan history.
@@ -57,7 +67,7 @@ def _rpc(url, method, params, timeout=30):
         return json.load(r)
 
 
-def mine(chain, top_n=4000):
+def mine(chain, top_n=4000, kind="erc20"):
     urls = SAMPLERS.get(chain)
     if not urls:
         raise SystemExit(f"no sampler RPC configured for {chain}")
@@ -73,13 +83,21 @@ def mine(chain, top_n=4000):
         raise SystemExit(f"{chain}: no sampler RPC reachable")
     stride = STRIDE_BY_CHAIN.get(chain, STRIDE)
     win = WINDOW_BY_CHAIN.get(chain, WINDOW)
-    windows = [(latest - i * stride - win, latest - i * stride) for i in range(WINDOWS)]
+    topic0, only_address = KIND_TOPICS[kind]
+    # NFT operator and Permit2 grants are far rarer than ERC-20 approvals. Widening the window
+    # is not an option (the RPCs reject it), so rarity is met with MORE windows, packed closer.
+    n_win, step = WINDOWS, stride
+    if kind != "erc20":
+        n_win, step = WINDOWS * 4, max(stride // 4, win + 1)
+    windows = [(latest - i * step - win, latest - i * step) for i in range(n_win)]
 
     def fetch(w):
+        flt = {"fromBlock": hex(w[0]), "toBlock": hex(w[1]), "topics": [topic0]}
+        if only_address:
+            flt["address"] = only_address
         for u in urls:                      # samplers disagree on limits — try each
             try:
-                r = _rpc(u, "eth_getLogs", [{"fromBlock": hex(w[0]), "toBlock": hex(w[1]),
-                                             "topics": [APPROVAL_TOPIC]}])
+                r = _rpc(u, "eth_getLogs", [flt])
                 if isinstance(r.get("result"), list):
                     return r["result"]
             except Exception:
@@ -93,7 +111,15 @@ def mine(chain, top_n=4000):
                 t = lg.get("topics") or []
                 if len(t) < 3:
                     continue
-                pairs[(lg["address"].lower(), "0x" + t[2][-40:])] += 1
+                if kind == "permit2":
+                    if len(t) < 4:
+                        continue
+                    # Permit2 indexes (owner, token, spender): the token is a topic, not the
+                    # emitting contract, since Permit2 emits for every token it holds.
+                    key = ("0x" + t[2][-40:], "0x" + t[3][-40:])
+                else:
+                    key = (lg["address"].lower(), "0x" + t[2][-40:])
+                pairs[key] += 1
                 total += 1
     if not total:
         raise SystemExit("sampled 0 events — sampler RPC unavailable")
@@ -107,15 +133,22 @@ def mine(chain, top_n=4000):
                 data = json.load(f)
         except Exception:
             data = {}
-    data[chain] = {
+    entry = {
         "pairs": [[t, s] for (t, s), _ in keep],
         "meta": {"sampled_events": total, "unique_pairs": len(pairs),
                  "kept": len(keep), "coverage_pct": round(covered, 1),
-                 "windows": WINDOWS, "window_blocks": win, "stride": stride},
+                 "windows": n_win, "window_blocks": win, "stride": step},
     }
+    if kind == "erc20":
+        entry["kinds"] = (data.get(chain) or {}).get("kinds", {})
+        data[chain] = entry
+    else:
+        base_entry = data.get(chain) or {"pairs": [], "meta": {}}
+        base_entry.setdefault("kinds", {})[kind] = entry
+        data[chain] = base_entry
     with open(OUT, "w") as f:
         json.dump(data, f)
-    print(f"{chain}: sampled {total} events, {len(pairs)} unique pairs, kept {len(keep)} "
+    print(f"{chain}/{kind}: sampled {total} events, {len(pairs)} unique pairs, kept {len(keep)} "
           f"covering {covered:.1f}% -> {OUT}")
 
 
@@ -124,4 +157,7 @@ if __name__ == "__main__":
     n = 4000
     if "--top" in sys.argv:
         n = int(sys.argv[sys.argv.index("--top") + 1])
-    mine(chain, n)
+    k = "erc20"
+    if "--kind" in sys.argv:
+        k = sys.argv[sys.argv.index("--kind") + 1]
+    mine(chain, n, k)

@@ -41,12 +41,31 @@ _load_env()
 UA = "Mozilla/5.0 (guardbot/0.1; +pre-trade safety; read-only)"
 TIMEOUT = 20
 
+from keccak import selector, topic as _topic
+
 # ERC-20 Approval(owner,spender,value) event topic0
 APPROVAL_TOPIC = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
+# An ERC-20 allowance is not the only thing you can hand out, and the others are worse:
+#  - ApprovalForAll gives an operator EVERY NFT in a collection, present and future. It is one
+#    of the most used drainer vectors, and reading only ERC-20 Approval events missed it whole.
+#  - Permit2 holds its own allowances INSIDE itself. The ERC-20 approval you see is just the
+#    door to it; the real exposure (which token, to whom, until when) lives in Permit2's books
+#    and stayed invisible while Permit2 was scored as a trusted spender — lowering the alarm.
+APPROVAL_FOR_ALL_TOPIC = _topic("ApprovalForAll(address,address,bool)")
+PERMIT2 = "0x000000000022d473030f116ddee9f6b43ac78ba3"
+PERMIT2_APPROVAL_TOPIC = _topic("Approval(address,address,address,uint160,uint48)")
+PERMIT2_PERMIT_TOPIC = _topic("Permit(address,address,address,uint160,uint48,uint48)")
+SEL_IS_APPROVED_FOR_ALL = selector("isApprovedForAll(address,address)")
+SEL_PERMIT2_ALLOWANCE = selector("allowance(address,address,address)")
+KIND_ERC20, KIND_NFT, KIND_PERMIT2 = "erc20", "nft_operator", "permit2"
 # Free Etherscan V2 key (one key, all chains) unlocks full-history getLogs on every chain.
 # Without it we fall back to direct public RPC, which only allows full-range getLogs on a
 # few chains (e.g. Arbitrum); the others are reported as 'degraded', never silently missed.
 ETHERSCAN_KEY = os.environ.get("GUARDBOT_ETHERSCAN_KEY", "")
+# Etherscan's FREE tier answers only these chains; elsewhere the key buys nothing and the
+# request falls through to our own scanner. Gating on the key alone quietly launched four
+# full-history sweeps on chains it never covered.
+ETHERSCAN_FREE_CHAINS = {"ethereum", "arbitrum", "polygon"}
 # Alchemy is the primary EVM logs source: its getLogs limits by RESULT COUNT (<=10k), not by
 # block range, so an owner-filtered Approval query passes over full chain history. One free key
 # covers all these chains. This is the approach revoke.cash-class tools actually use.
@@ -195,12 +214,13 @@ def _first_active_block(rpc, owner, latest):
     return lo
 
 
-def _getlogs_try(url, owner_topic, lo, hi):
+def _getlogs_try(url, owner_topic, lo, hi, topic0=APPROVAL_TOPIC, address=None):
     """One owner-filtered getLogs. Returns ('ok', logs) | ('toobig', None) | ('err', None).
     'toobig' means the RANGE was too wide for the provider (split it), not a real failure."""
-    body = {"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
-            "params": [{"fromBlock": hex(lo), "toBlock": hex(hi),
-                        "topics": [APPROVAL_TOPIC, owner_topic]}]}
+    flt = {"fromBlock": hex(lo), "toBlock": hex(hi), "topics": [topic0, owner_topic]}
+    if address:
+        flt["address"] = address
+    body = {"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs", "params": [flt]}
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"User-Agent": UA, "Content-Type": "application/json"})
     try:
@@ -223,7 +243,7 @@ def _getlogs_try(url, owner_topic, lo, hi):
 MAX_TRIES = 3   # per-range retries on transient RPC errors before recording an honest gap
 
 
-def _chunked_scan(pool, owner_topic, start, latest):
+def _chunked_scan(pool, owner_topic, start, latest, topic0=APPROVAL_TOPIC, address=None):
     """Adaptive parallel scanner over a free-RPC pool. Seeds wide ranges; for each range it tries
     EVERY RPC in the pool (they disagree on limits) before deciding. A range all providers reject
     as too large is split; one that keeps erroring after retries is recorded as a GAP, never
@@ -264,7 +284,7 @@ def _chunked_scan(pool, owner_topic, start, latest):
             span = hi - lo + 1
             ok_logs, toobig = None, False
             for _ in range(len(pool)):        # try EVERY provider before giving up on this range
-                st, got = _getlogs_try(next_url(), owner_topic, lo, hi)
+                st, got = _getlogs_try(next_url(), owner_topic, lo, hi, topic0, address)
                 if st == "ok":
                     ok_logs = got
                     break
@@ -319,8 +339,9 @@ def _db():
         try:
             os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
             c = sqlite3.connect(_DB_PATH, check_same_thread=False)
-            c.execute("CREATE TABLE IF NOT EXISTS pairs(chain TEXT, owner TEXT, token TEXT,"
-                      " spender TEXT, PRIMARY KEY(chain, owner, token, spender))")
+            c.execute("CREATE TABLE IF NOT EXISTS grants(chain TEXT, owner TEXT, kind TEXT,"
+                      " token TEXT, spender TEXT,"
+                      " PRIMARY KEY(chain, owner, kind, token, spender))")
             c.execute("CREATE TABLE IF NOT EXISTS state(chain TEXT, owner TEXT,"
                       " last_block INTEGER, PRIMARY KEY(chain, owner))")
             c.execute("CREATE TABLE IF NOT EXISTS result(owner TEXT PRIMARY KEY,"
@@ -339,13 +360,13 @@ def _cached(chain, owner):
     owner = owner.lower()
     with _db_lock:
         try:
-            pr = db.execute("SELECT token, spender FROM pairs WHERE chain=? AND owner=?",
+            pr = db.execute("SELECT kind, token, spender FROM grants WHERE chain=? AND owner=?",
                             (chain, owner)).fetchall()
             st = db.execute("SELECT last_block FROM state WHERE chain=? AND owner=?",
                             (chain, owner)).fetchone()
         except Exception:
             return set(), None
-    return {(t, s) for t, s in pr}, (st[0] if st else None)
+    return {(k, t, s) for k, t, s in pr}, (st[0] if st else None)
 
 
 def _store(chain, owner, pairs, last_block):
@@ -355,8 +376,9 @@ def _store(chain, owner, pairs, last_block):
     owner = owner.lower()
     with _db_lock:
         try:
-            db.executemany("INSERT OR IGNORE INTO pairs(chain, owner, token, spender)"
-                           " VALUES(?,?,?,?)", [(chain, owner, t, s) for t, s in pairs])
+            db.executemany("INSERT OR IGNORE INTO grants(chain, owner, kind, token, spender)"
+                           " VALUES(?,?,?,?,?)",
+                           [(chain, owner, k, t, s) for k, t, s in pairs])
             db.execute("INSERT OR REPLACE INTO state(chain, owner, last_block) VALUES(?,?,?)",
                        (chain, owner, int(last_block)))
             db.commit()
@@ -407,7 +429,8 @@ def _block_number(rpc):
         return 0
 
 
-def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=False):
+def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=False,
+                   topic0=APPROVAL_TOPIC, address=None):
     """Return (logs, latest_block, ok, partial) for Approval events in [from_block, latest].
     from_block=0 = full history; >0 = incremental (only new blocks, driven by the local index).
     Fast pre-check skips fresh scans of chains the address never used (nonce==0). Source order:
@@ -431,8 +454,9 @@ def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=Fa
     # Etherscan V2 free — covers Ethereum, Arbitrum, Polygon; honors incremental fromBlock.
     if ETHERSCAN_KEY:
         url = (f"https://api.etherscan.io/v2/api?chainid={cfg['id']}&module=logs&action=getLogs"
-               f"&fromBlock={from_block}&toBlock=latest&topic0={APPROVAL_TOPIC}&topic0_1_opr=and"
-               f"&topic1={owner_topic}&apikey={ETHERSCAN_KEY}")
+               f"&fromBlock={from_block}&toBlock=latest&topic0={topic0}&topic0_1_opr=and"
+               f"&topic1={owner_topic}&apikey={ETHERSCAN_KEY}"
+               + (f"&address={address}" if address else ""))
         for _ in range(4):
             try:
                 d = _get(url)
@@ -454,7 +478,7 @@ def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=Fa
     if pool:
         start = from_block if from_block > 0 else _first_active_block(rpc, owner, latest)
         try:
-            logs, gaps = _chunked_scan(pool, owner_topic, start, latest)
+            logs, gaps = _chunked_scan(pool, owner_topic, start, latest, topic0, address)
             return logs, latest, True, bool(gaps)
         except Exception:
             pass
@@ -496,8 +520,8 @@ PROBE_WORKERS = 8
 _PROBE = None
 
 
-def _probe_universe(chain):
-    """Mined candidate (token,spender) pairs for a chain, or ([], meta) if none shipped."""
+def _probe_universe(chain, kind="erc20"):
+    """Mined candidate pairs for a chain and grant kind, or ([], {}) if none shipped."""
     global _PROBE
     if _PROBE is None:
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe_universe.json")
@@ -507,6 +531,8 @@ def _probe_universe(chain):
         except Exception:
             _PROBE = {}
     entry = _PROBE.get(chain) or {}
+    if kind != "erc20":
+        entry = (entry.get("kinds") or {}).get(kind) or {}
     return entry.get("pairs") or [], entry.get("meta") or {}
 
 
@@ -603,6 +629,76 @@ def _probe_allowances(rpc, owner, pairs):
     return {p for p in hits if canary.get(p, 0) == 0}
 
 
+def _mc_generic(rpc, pairs, build_call):
+    """Batch arbitrary per-pair calls through Multicall3 -> {(a, b): int result}."""
+    batches = [pairs[i:i + PROBE_BATCH] for i in range(0, len(pairs), PROBE_BATCH)]
+    out, lock = {}, threading.Lock()
+
+    def run(batch):
+        calls = [build_call(a, b) for a, b in batch]
+        try:
+            r = _rpc(rpc, "eth_call", [{"to": MULTICALL3, "data": _enc_aggregate3(calls)}, "latest"])
+            if not r or r == "0x":
+                return
+            res = _dec_aggregate3(r)
+        except Exception:
+            return
+        got = {}
+        for (a, b), (ok, val) in zip(batch, res):
+            if ok and val and val != "0x":
+                try:
+                    got[(a.lower(), b.lower())] = int(val[:66], 16)
+                except ValueError:
+                    pass
+        if got:
+            with lock:
+                out.update(got)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=PROBE_WORKERS) as ex:
+        list(ex.map(run, batches))
+    return out
+
+
+def _probe_nft_operators(rpc, owner, pairs):
+    """isApprovedForAll(owner, operator) over candidate (collection, operator) pairs.
+    Same canary discipline: a collection that answers 'yes' for an owner who cannot have
+    approved anything is lying, and all of its hits are dropped."""
+    if not pairs:
+        return set()
+    call = lambda c, op: (c, True, SEL_IS_APPROVED_FOR_ALL + _addr32(owner) + _addr32(op))
+    hits = {p for p, v in _mc_generic(rpc, pairs, call).items() if v == 1 and p[1] != ZERO_ADDR}
+    if not hits:
+        return set()
+    ccall = lambda c, op: (c, True, SEL_IS_APPROVED_FOR_ALL + _addr32(CANARY_OWNER) + _addr32(op))
+    canary = _mc_generic(rpc, sorted(hits), ccall)
+    return {p for p in hits if canary.get(p, 0) != 1}
+
+
+def _probe_permit2(rpc, owner, pairs):
+    """Permit2.allowance(owner, token, spender) over candidate (token, spender) pairs.
+    Permit2 is a single audited contract, so there is no lying-contract problem here."""
+    if not pairs:
+        return set()
+    call = lambda t, sp: (PERMIT2, True,
+                          SEL_PERMIT2_ALLOWANCE + _addr32(owner) + _addr32(t) + _addr32(sp))
+    return {p for p, v in _mc_generic(rpc, pairs, call).items() if v > 0}
+
+
+def _permit2_allowance(rpc, owner, token, spender):
+    """Permit2.allowance(user, token, spender) -> (amount uint160, expiration uint48, nonce).
+    This is the exposure the plain ERC-20 view cannot see: approving Permit2 only opens the
+    door; what actually got granted, to whom and until when is written inside Permit2."""
+    data = (SEL_PERMIT2_ALLOWANCE + owner[2:].lower().rjust(64, "0")
+            + token[2:].lower().rjust(64, "0") + spender[2:].lower().rjust(64, "0"))
+    try:
+        r = _rpc(rpc, "eth_call", [{"to": PERMIT2, "data": data}, "latest"])
+        if not r or len(r) < 194:
+            return 0, 0
+        return int(r[2:66], 16), int(r[66:130], 16)
+    except Exception:
+        return 0, 0
+
+
 def _resolve_pairs(rpc, name, owner, pairs):
     """Live allowance for every known (token,spender) pair, in parallel. cur==0 = revoked
     (skip); this is the current on-chain truth, re-checked every scan even when pairs are cached."""
@@ -619,8 +715,46 @@ def _resolve_pairs(rpc, name, owner, pairs):
             sym_cache[token] = s
         return s
 
-    def resolve(pair):
-        token, spender = pair
+    def resolve(grant):
+        kind, token, spender = grant
+        if kind == KIND_NFT:
+            # An operator approval is all-or-nothing: it covers every token in the collection,
+            # including ones bought after it was granted. There is no "amount" to read — only
+            # whether it is still on.
+            try:
+                r = _rpc(rpc, "eth_call", [{"to": token,
+                                            "data": SEL_IS_APPROVED_FOR_ALL
+                                            + owner[2:].lower().rjust(64, "0")
+                                            + spender[2:].lower().rjust(64, "0")}, "latest"])
+                on = bool(r) and r != "0x" and int(r, 16) == 1
+            except Exception:
+                return None
+            if not on:
+                return None
+            return {
+                "chain": name, "kind": "nft_operator",
+                "token": token, "token_symbol": symbol(token),
+                "spender": spender,
+                "amount": "every NFT in this collection", "unlimited": True, "risky": True,
+                "evidence": {"isApprovedForAll": True},
+            }
+        if kind == KIND_PERMIT2:
+            amount, expiration = _permit2_allowance(rpc, owner, token, spender)
+            if amount <= 0:
+                return None
+            expired = 0 < expiration <= int(time.time())
+            if expired:
+                return None   # Permit2 grants carry a deadline; a lapsed one is not exposure
+            unlimited = amount >= (1 << 160) - 1
+            return {
+                "chain": name, "kind": "permit2",
+                "token": token, "token_symbol": symbol(token),
+                "spender": spender,
+                "amount": "unlimited" if unlimited else str(amount),
+                "unlimited": unlimited, "risky": True,
+                "evidence": {"via": "Permit2", "permit2_amount": str(amount),
+                             "expires_unix": expiration or None},
+            }
         cur = _allowance(rpc, owner, token, spender)
         if cur == 0:
             return None   # revoked / zero — nothing to clean
@@ -664,35 +798,74 @@ def _scan_chain(name, cfg, owner_topic, address):
             pass
     universe, _meta = _probe_universe(name)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        f_logs = ex.submit(_approval_logs, name, cfg, owner_topic, address, from_block, True)
+    # Three different things can be handed out, each with its own event, so each is asked for
+    # separately: an ERC-20 allowance, an NFT operator (ApprovalForAll), and a grant recorded
+    # inside Permit2. Reading only the first was the blind spot.
+    # All four event families are walked on every chain. Measured on a heavy Base address:
+    # the ERC-20 sweep alone costs 137s and the three extra topics add ~27s, so gating them off
+    # bought 20% speed and lost every long-tail NFT grant — the log scan is the only source that
+    # finds a collection outside the mined universe. Correctness wins that trade.
+    sources = [(KIND_ERC20, APPROVAL_TOPIC, None),
+               (KIND_NFT, APPROVAL_FOR_ALL_TOPIC, None),
+               (KIND_PERMIT2, PERMIT2_APPROVAL_TOPIC, PERMIT2),
+               (KIND_PERMIT2, PERMIT2_PERMIT_TOPIC, PERMIT2)]
+    nft_universe = _probe_universe(name, KIND_NFT)[0]
+    p2_universe = _probe_universe(name, KIND_PERMIT2)[0]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources) + 3) as ex:
+        f_logs = {k_t: ex.submit(_approval_logs, name, cfg, owner_topic, address, from_block,
+                                 True, k_t[1], k_t[2])
+                  for k_t in sources}
         f_probe = ex.submit(_probe_allowances, rpc, address, universe) if universe else None
-        try:
-            logs, latest, ok, partial = f_logs.result()
-        except Exception:
-            logs, latest, ok, partial = [], 0, False, False
-        probe_hits = set()
-        if f_probe is not None:
+        f_nft = ex.submit(_probe_nft_operators, rpc, address, nft_universe) if nft_universe else None
+        f_p2 = ex.submit(_probe_permit2, rpc, address, p2_universe) if p2_universe else None
+        results, latest, ok, partial = {}, 0, False, False
+        for k_t, fut in f_logs.items():
             try:
-                probe_hits = f_probe.result()
+                lg, lb, o, p = fut.result()
             except Exception:
-                pass
+                lg, lb, o, p = [], 0, False, False
+            results[k_t] = (lg, o)
+            latest = max(latest, lb)
+            # the ERC-20 pass decides the chain's status; it is the one that must be exhaustive
+            if k_t[0] == KIND_ERC20 and k_t[1] == APPROVAL_TOPIC:
+                ok, partial = o, p
+        def _res(f):
+            if f is None:
+                return set()
+            try:
+                return f.result()
+            except Exception:
+                return set()
+
+        probe_hits, nft_hits, p2_hits = _res(f_probe), _res(f_nft), _res(f_p2)
 
     if ok:
-        for lg in logs:
-            topics = lg.get("topics") or []
-            if len(topics) < 3:
-                continue          # only indexed Approval(owner,spender); skip Permit-style
-            pairs.add((lg["address"].lower(), "0x" + topics[2][-40:]))
+        for (kind, topic0, _addr), (logs, source_ok) in results.items():
+            if not source_ok:
+                continue
+            for lg in logs:
+                topics = lg.get("topics") or []
+                if len(topics) < 3:
+                    continue
+                if kind == KIND_PERMIT2:
+                    # Permit2 indexes (owner, token, spender) — the token is a topic, not the
+                    # emitting contract, because Permit2 emits for every token it holds.
+                    if len(topics) < 4:
+                        continue
+                    pairs.add((kind, "0x" + topics[2][-40:], "0x" + topics[3][-40:]))
+                else:
+                    pairs.add((kind, lg["address"].lower(), "0x" + topics[2][-40:]))
         status = "partial" if partial else "scanned"
-    elif probe_hits or universe:
+    elif probe_hits or nft_hits or p2_hits or universe:
         status = "probed"         # no readable history; the probe is the source
     elif pairs:
         status = "cached"         # nothing live worked; show last-known pairs
     else:
         return name, "degraded", []
 
-    pairs |= probe_hits
+    pairs |= {(KIND_ERC20, t, sp) for t, sp in probe_hits}
+    pairs |= {(KIND_NFT, c, op) for c, op in nft_hits}
+    pairs |= {(KIND_PERMIT2, t, sp) for t, sp in p2_hits}
     # only advance the index watermark on a COMPLETE log scan; anything else must re-read.
     if ok and not partial:
         _store(name, address, pairs, latest)
@@ -873,7 +1046,15 @@ def _score_items(items):
     for it in items:
         key = (it["chain"], (it.get("spender") or "").lower())
         trust, name = cache[key]
-        exposure = 40 if it.get("unlimited") else (30 if it.get("kind") == "delegate" else 10)
+        kind = it.get("kind")
+        if kind == "nft_operator":
+            exposure = 45   # every NFT in the collection, including ones not yet bought
+        elif kind == "permit2":
+            exposure = 40 if it.get("unlimited") else 20
+        elif kind == "delegate":
+            exposure = 30
+        else:
+            exposure = 40 if it.get("unlimited") else 10
         score = exposure + {"legit": -20, "malicious": 60, "unknown": 25}[trust]
         if it.get("symbol_verified") is False:
             score += 40   # it wears a trusted ticker it has no claim to — treat as hostile

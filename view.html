@@ -108,7 +108,11 @@ function render(d,mode){
     return '<tr><td><span class="chip">'+esc(i.chain)+'</span></td>'
       +'<td>'+tok+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
       +'<td>'+spend+'</td>'
-      +'<td class="mono">'+esc(i.kind)+'</td>'
+      +'<td class="mono">'+esc({'approval':'token','nft_operator':'NFT · all','permit2':'via Permit2',
+                                'delegate':'delegate'}[i.kind]||i.kind)
+        +(i.evidence&&i.evidence.expires_unix
+          ?'<div class="hint" style="margin:0">until '+esc(new Date(i.evidence.expires_unix*1000).toISOString().slice(0,10))+'</div>':'')
+        +'</td>'
       +'<td>'+badge+'</td></tr>';
   }).join('');
   out.innerHTML=head+'<table><thead><tr><th>Chain</th><th>Token</th><th>Spender</th><th>Type</th><th>Risk</th></tr></thead><tbody>'+rows+'</tbody></table>';
