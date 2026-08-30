@@ -1,19 +1,16 @@
 # GuardBot ⚡ — pre-trade safety for agents & bots
 
-Before you buy a token: **is it a rug / honeypot / trap?** GuardBot aggregates
-RugCheck (Solana) and GoPlus (EVM) into **one verdict** — `safe | warn | block` — **with
-the evidence**. It never routes trades or touches funds: it only reads public data.
+Before you buy a token: **is it a rug / honeypot / trap?** GuardBot answers first-hand — it
+simulates buying the token and selling it back against live liquidity — and returns **one
+verdict**, `safe | warn | block`, **with the evidence**. It never routes trades or touches
+funds: it only reads public data and simulates. No third-party safety API is consulted on EVM
+chains (Solana still falls back to RugCheck, and says so).
 
 Designed as a typed **MCP tool** an agent calls *before* it buys, plus a plain HTTP API,
 with per-call **x402** payments.
 
-## What it does (tested on live tokens)
-- **safe** (score 100): clean tokens.
-- **warn** (e.g. 88 — mutable metadata; USDC-Solana: active mint/freeze authority).
-- **block** (e.g. 0 — low liquidity + concentrated holder).
-
-Every check carries its proof (honeypot, mint/freeze authority, taxes, liquidity, holder
-concentration, LP, and more).
+Every check carries its proof: whether the sell actually reverted, what the round trip really
+returned, how deep the pool is, which privileged functions are in the deployed bytecode.
 
 GuardBot does both sides of safety:
 - **Prevent** — is a token a trap *before* you buy? Answered **first-hand**: we simulate
@@ -69,8 +66,6 @@ sells perfectly was being blocked purely for having a proxy, an owner and unburn
 
 Measuring V2 pools alone had flagged the genuine native USDC on Arbitrum as an impostor — most of
 its liquidity lives in V3. The fix was to measure the market properly, not to soften the check.
-Optimism is excluded rather than guessed at: its liquidity sits on Velodrome, which this
-measurement doesn't cover.
 
 **A failure has to prove itself.** A reverted sell can mean "honeypot" or "the node hiccuped",
 and the two are indistinguishable in the response. So every failure is paired with a *control*
@@ -80,21 +75,47 @@ without that, reserves shift between calls on a busy pool, the second buy return
 than the first, the sell overdraws, and the tool brands **USDT** a honeypot. It did, twice,
 until this was fixed.
 
+Tokens that live only on Uniswap V3 are simulated there instead (native coin is wrapped inside
+the same call), which is also how **Optimism** is covered — it has no Uniswap-V2 venue, its
+liquidity is on Velodrome, whose router takes a different route struct. Depth is likewise summed
+over V2 and every V3 fee tier: measuring V2 alone called Arbitrum's native USDC illiquid and
+blocked it.
+
 Measured on BSC (real tokens people had approved): **5/5 honeypots blocked** across repeat runs,
-**0 false positives in 20 consecutive runs** on CAKE / USDT / BUSD / WBNB. Chains: BSC,
-Ethereum, Base, Arbitrum, Polygon.
+**0 false positives in 20 consecutive runs** on CAKE / USDT / BUSD / WBNB. Round trips come back
+at exactly the pool fee taken twice (99.5% on PancakeSwap's 0.25%, 99.4% on a 0.3% tier), which
+is the check that the measurement itself is sound. Chains: BSC, Ethereum, Base, Arbitrum,
+Polygon, Optimism.
 
 ```bash
 python3 tokencheck.py bsc 0x<token>
 curl "http://127.0.0.1:8403/v1/tokencheck?chain=bsc&address=0x<token>"
 ```
 
+## Tests
+```bash
+python3 -m unittest discover -s tests          # 27 unit tests, no network, ~5ms
+GUARDBOT_LIVE=1 python3 -m unittest discover -s tests   # + 8 live tests against real tokens
+```
+The unit tests pin the places where a silent mistake becomes a false verdict — hashing, ABI
+codec, scoring, the impersonation rule, the Permit2 decoder, the canary — and several are
+regressions for bugs that actually shipped here: a transient node error branding USDT a
+honeypot, soft warnings accumulating into a hard block, a V2-only depth measurement calling
+native USDC illiquid, and our own 1% sell margin being reported as the token's tax. The live
+tests assert that real tokens are never blocked and that known honeypots and fake USDT always
+are. 35/35 pass.
+
 ## Components
 - `guard.py` — token-safety engine: `assess(chain, address)` → normalized verdict. Stdlib only.
 - `approvals.py` — approval viewer: `approvals(address)` across EVM (Approval events + live
   allowance, the revoke.cash method), TRON (TronScan), Solana (SPL delegates via RPC).
 - `guardd.py` — HTTP daemon: `/v1/check`, `/v1/approvals`, `/view` (browser UI), x402 payments.
-- `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` as a tool.
+- `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` (our simulator)
+  and `check_approvals(address)` as typed tools for an agent.
+- `keccak.py` — keccak256 in pure Python, so selectors, event topics and storage slots are
+  computed here rather than copied (hashlib ships SHA3-256, which is not keccak256).
+- `tools/mine_*.py` — one-off miners that build the probe universes and the symbol registry
+  from chain data.
 
 ### Approvals viewer — local-first, private, and fast
 ```bash

@@ -1,32 +1,60 @@
 #!/usr/bin/env python3
-"""GuardBot MCP server (stdio) — exposes check_token as a typed MCP tool.
+"""GuardBot MCP server (stdio) — the tools an agent should call before it acts.
 
-An agent (Claude, VibeKit, etc.) mounts this server and calls check_token(chain, address)
-before buying. No dependencies: newline-delimited JSON-RPC 2.0 over stdin/stdout, per the
-MCP stdio transport. The safety logic is guard.assess().
+An agent (Claude, VibeKit, …) mounts this server and asks two things: is this token a trap
+(check_token), and what has this wallet already handed out (check_approvals). No dependencies:
+newline-delimited JSON-RPC 2.0 over stdin/stdout, per the MCP stdio transport.
+
+check_token runs OUR engine (tokencheck): it simulates buying and selling the token against
+live liquidity rather than asking a vendor's API what it thinks. On chains that engine does
+not cover it falls back to guard.assess() (RugCheck/GoPlus) and says so, instead of pretending.
 """
 
 import json
 import sys
 
 import guard
+import tokencheck
+import approvals as approvals_mod
 
 PROTOCOL = "2024-11-05"
-TOOL = {
-    "name": "check_token",
-    "description": ("Pre-trade safety check: given a token (chain + address), returns a "
-                    "safe/warn/block verdict with the evidence. Aggregates RugCheck (Solana) "
-                    "and GoPlus (EVM). Call this BEFORE buying a token."),
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "chain": {"type": "string",
-                      "description": "solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalanche"},
-            "address": {"type": "string", "description": "Solana mint or EVM address (0x…) of the token"},
+TOOLS = [
+    {
+        "name": "check_token",
+        "description": ("Pre-trade safety check. Simulates actually BUYING the token and "
+                        "SELLING it back against live liquidity, so a honeypot, a punitive "
+                        "tax or an empty pool is demonstrated rather than guessed. Also "
+                        "checks whether the contract is impersonating a bigger token's "
+                        "ticker. Returns safe/warn/block with the evidence. Call BEFORE "
+                        "buying."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string",
+                          "description": "bsc | ethereum | base | arbitrum | polygon "
+                                         "(simulated); solana falls back to RugCheck"},
+                "address": {"type": "string", "description": "token contract address (0x…) "
+                                                             "or Solana mint"},
+            },
+            "required": ["chain", "address"],
         },
-        "required": ["chain", "address"],
     },
-}
+    {
+        "name": "check_approvals",
+        "description": ("What has this wallet already handed out? Lists standing approvals "
+                        "across EVM chains, TRON and Solana — ERC-20 allowances, NFT operator "
+                        "approvals (ApprovalForAll) and grants held inside Permit2 — each with "
+                        "a graded risk level. Read-only."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "address": {"type": "string",
+                            "description": "wallet address: EVM 0x…, TRON T…, or Solana base58"},
+            },
+            "required": ["address"],
+        },
+    },
+]
 
 
 def send(msg):
@@ -54,14 +82,24 @@ def handle(msg):
     elif method == "ping":
         result(id_, {})
     elif method == "tools/list":
-        result(id_, {"tools": [TOOL]})
+        result(id_, {"tools": TOOLS})
     elif method == "tools/call":
         params = msg.get("params") or {}
-        if params.get("name") != "check_token":
-            return error(id_, -32602, f"unknown tool: {params.get('name')}")
+        name = params.get("name")
         args = params.get("arguments") or {}
+        if name not in {t["name"] for t in TOOLS}:
+            return error(id_, -32602, f"unknown tool: {name}")
         try:
-            verdict = guard.assess(args.get("chain", ""), args.get("address", ""))
+            if name == "check_approvals":
+                verdict = approvals_mod.approvals(args.get("address", ""))
+            else:
+                chain = (args.get("chain") or "").lower()
+                if chain in tokencheck.RPCS:
+                    verdict = tokencheck.check_token(chain, args.get("address", ""))
+                else:
+                    # our simulator has no venue on this chain — say which engine answered
+                    verdict = guard.assess(chain, args.get("address", ""))
+                    verdict["engine"] = "guard/third-party (chain not simulated by tokencheck)"
         except Exception as e:
             return result(id_, {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True})
         is_err = "error" in verdict
