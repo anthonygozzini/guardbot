@@ -72,6 +72,14 @@ function render(d,mode){
       +d.degraded_chains.length+' EVM chains not scanned ('+esc(d.degraded_chains.join(', '))
       +'). '+esc(note)+'</div>';
   }
+  if(d.probed_chains&&d.probed_chains.length){
+    var cov=d.probe_coverage_pct||{};
+    var parts=d.probed_chains.map(function(c){return esc(c)+(cov[c]?' ('+cov[c]+'%)':'');});
+    head+='<div class="err" style="border-color:var(--accent);background:#0d2a20;color:var(--accent)">◎ '
+      +'Probed (not log-scanned): '+parts.join(', ')+' — no free RPC serves log history there, so every '
+      +'candidate token/spender pair mined from the chain itself was checked live. High coverage, '
+      +'not a completeness guarantee.</div>';
+  }
   if(d.partial_chains&&d.partial_chains.length){
     head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
       +'Partial scan on '+esc(d.partial_chains.join(', '))+' — some block ranges could not be read, '

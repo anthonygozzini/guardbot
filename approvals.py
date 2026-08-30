@@ -452,6 +452,108 @@ def _symbol(rpc, token):
     return None
 
 
+# ---------------- probe: read the PRESENT when the PAST is unreadable ----------------
+# Some chains (BSC) refuse eth_getLogs on every free RPC, so approval history can't be read.
+# But eth_call is never range-limited, and Multicall3 — same address on every EVM chain —
+# batches thousands of allowance() calls into ONE request (measured: 4000 calls / 2.6s on BSC).
+# So instead of reading the past we probe the present: check candidate (token,spender) pairs
+# mined from the chain's own Approval events (tools/mine_probe_universe.py). This finds real
+# standing approvals with zero getLogs, zero API keys and zero third-party services.
+# It is a PROBE, not an exhaustive scan: coverage is reported, never implied.
+MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
+AGG3_SELECTOR = "82ad56cb"    # aggregate3((address,bool,bytes)[])
+PROBE_BATCH = 500             # calls per multicall request (~0.7s each, measured)
+PROBE_WORKERS = 8
+_PROBE = None
+
+
+def _probe_universe(chain):
+    """Mined candidate (token,spender) pairs for a chain, or ([], meta) if none shipped."""
+    global _PROBE
+    if _PROBE is None:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe_universe.json")
+        try:
+            with open(p) as f:
+                _PROBE = json.load(f)
+        except Exception:
+            _PROBE = {}
+    entry = _PROBE.get(chain) or {}
+    return entry.get("pairs") or [], entry.get("meta") or {}
+
+
+def _w(x):
+    return f"{int(x):064x}"
+
+
+def _addr32(a):
+    return a.lower().replace("0x", "").rjust(64, "0")
+
+
+def _enc_aggregate3(calls):
+    """ABI-encode aggregate3((address target, bool allowFailure, bytes callData)[])."""
+    head, bodies = [AGG3_SELECTOR, _w(0x20), _w(len(calls))], []
+    for target, allow, cd in calls:
+        cd = cd[2:] if cd.startswith("0x") else cd
+        nbytes = len(cd) // 2
+        pad = "0" * (((32 - (nbytes % 32)) % 32) * 2)
+        bodies.append(_addr32(target) + _w(1 if allow else 0) + _w(0x60) + _w(nbytes) + cd + pad)
+    off = 32 * len(calls)
+    for b in bodies:
+        head.append(_w(off))
+        off += len(b) // 2
+    return "0x" + "".join(head) + "".join(bodies)
+
+
+def _dec_aggregate3(hexstr):
+    """Decode Result[] = (bool success, bytes returnData)[]."""
+    d = hexstr[2:] if hexstr.startswith("0x") else hexstr
+
+    def word(i):
+        return int(d[i * 64:(i + 1) * 64], 16)
+
+    base = word(0) // 32
+    out = []
+    for i in range(word(base)):
+        e = base + 1 + word(base + 1 + i) // 32
+        ok = word(e) == 1
+        b = e + word(e + 1) // 32
+        ln = word(b)
+        out.append((ok, "0x" + d[(b + 1) * 64:(b + 1) * 64 + ln * 2]))
+    return out
+
+
+def _probe_allowances(rpc, owner, pairs):
+    """Batch allowance(owner, spender) over candidate pairs via Multicall3.
+    Returns the set of (token, spender) whose allowance is currently > 0."""
+    batches = [pairs[i:i + PROBE_BATCH] for i in range(0, len(pairs), PROBE_BATCH)]
+    found, lock = set(), threading.Lock()
+
+    def run(batch):
+        calls = [(t, True, "0xdd62ed3e" + _addr32(owner) + _addr32(s)) for t, s in batch]
+        try:
+            r = _rpc(rpc, "eth_call", [{"to": MULTICALL3, "data": _enc_aggregate3(calls)}, "latest"])
+            if not r or r == "0x":
+                return
+            res = _dec_aggregate3(r)
+        except Exception:
+            return
+        hits = set()
+        for (t, s), (ok, val) in zip(batch, res):
+            if ok and val and val != "0x":
+                try:
+                    if int(val, 16) > 0:
+                        hits.add((t.lower(), s.lower()))
+                except ValueError:
+                    pass
+        if hits:
+            with lock:
+                found.update(hits)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=PROBE_WORKERS) as ex:
+        list(ex.map(run, batches))
+    return found
+
+
 def _resolve_pairs(rpc, name, owner, pairs):
     """Live allowance for every known (token,spender) pair, in parallel. cur==0 = revoked
     (skip); this is the current on-chain truth, re-checked every scan even when pairs are cached."""
@@ -498,9 +600,15 @@ def _scan_chain(name, cfg, owner_topic, address):
     from_block = (last + 1) if last is not None else 0
     logs, latest, ok, partial = _approval_logs(name, cfg, owner_topic, address, from_block)
     if not ok:
-        if not pairs:
+        # no readable log history → probe the present via Multicall3 over mined candidates.
+        universe, _meta = _probe_universe(name)
+        if universe:
+            pairs |= _probe_allowances(_chain_rpc(name, cfg), address, universe)
+            status = "probed"
+        elif pairs:
+            status = "cached"    # live scan down; show last-known pairs
+        else:
             return name, "degraded", []
-        status = "cached"        # live scan down; show last-known pairs
     else:
         for lg in logs:
             topics = lg.get("topics") or []
@@ -517,7 +625,7 @@ def _scan_chain(name, cfg, owner_topic, address):
 
 def _evm(address):
     owner_topic = "0x" + "0" * 24 + address[2:].lower()
-    items, scanned, degraded, partial = [], [], [], []
+    items, scanned, degraded, partial, probed = [], [], [], [], []
     # fan every chain out concurrently: wall-clock = the slowest single chain, not the sum.
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVM_CFG)) as ex:
         results = ex.map(lambda kv: _scan_chain(kv[0], kv[1], owner_topic, address),
@@ -528,9 +636,11 @@ def _evm(address):
             continue
         if status == "partial":
             partial.append(name)
+        if status == "probed":
+            probed.append(name)
         scanned.append(name if status == "scanned" else name + " (" + status + ")")
         items.extend(chain_items)
-    return items, scanned, degraded, partial
+    return items, scanned, degraded, partial, probed
 
 
 # ---------------- TRON via TronScan ----------------
@@ -663,9 +773,9 @@ def approvals(address, chain=None, cached_only=False):
                                             "chains_scanned": [], "count": 0, "risky_count": 0,
                                             "levels": {lv: 0 for lv in LEVELS}, "items": [],
                                             "note": "no cached result yet — run a live scan"}
-    degraded, partial = [], []
+    degraded, partial, probed = [], [], []
     if kind == "evm":
-        items, scanned, degraded, partial = _evm(address)
+        items, scanned, degraded, partial, probed = _evm(address)
     elif kind == "tron":
         items, scanned = _tron(address)
     elif kind == "solana":
@@ -691,6 +801,15 @@ def approvals(address, chain=None, cached_only=False):
                        "tier covers only Ethereum/Arbitrum/Polygon; Alchemy's free tier caps "
                        "getLogs at 10 blocks). For them use a paid provider (Alchemy PAYG or "
                        "Etherscan) or a per-chain explorer key.")
+    if probed:
+        cov = {c: (_probe_universe(c)[1] or {}).get("coverage_pct") for c in probed}
+        out["probed_chains"] = probed
+        out["probe_coverage_pct"] = cov
+        out["probe_note"] = ("These chains have no readable log history on any free RPC, so they "
+                             "were PROBED instead of scanned: every candidate (token,spender) pair "
+                             "mined from the chain's own Approval events was checked live via "
+                             "Multicall3. Coverage is the share of observed approval activity the "
+                             "candidate set represents — high, but not a guarantee of completeness.")
     if partial:
         out["partial_chains"] = partial
         out["partial_note"] = ("Some block ranges on these chains could not be read from the free "

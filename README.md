@@ -50,11 +50,28 @@ GuardBot's own scanner instead:
 
 Result on a normal wallet: full multi-chain live scan in ~2s, cached re-open in <1ms.
 
+**Probing the present when the past is unreadable.** BSC refuses `eth_getLogs` on every free RPC
+(`limit exceeded`, or a 50-block ceiling — useless across 118M blocks), so approval *history* there
+cannot be read for free. GuardBot doesn't buy an indexer for it: it changes mechanism.
+`eth_call` is never range-limited, and **Multicall3** — same address on every EVM chain — batches
+thousands of `allowance()` calls into **one** request (measured: 4000 calls / 2.6s on BSC). So the
+present is probed instead of the past being read:
+
+1. `tools/mine_probe_universe.py` samples real `Approval` events from the chain itself and keeps
+   the `(token, spender)` pairs that actually occur — the universe is mined from the chain, not
+   hardcoded and not bought. On BSC: 7.7k unique pairs exist, the top 4000 cover **96.6%** of all
+   observed approval activity (`probe_universe.json`).
+2. Every candidate pair is checked live via Multicall3 in ~8 batched requests.
+
+Verified against ground truth: **3/3 real BSC approvals recovered, ~0.8s each, zero `getLogs`,
+zero API keys, zero third-party services** — including two unlimited USDT approvals that the
+log-scanning path could never see. Results are labelled `probed` with their coverage %: high, but
+reported as a probe, never implied to be exhaustive.
+
 **Coverage & honesty.** Ethereum / Arbitrum / Polygon use the free **Etherscan V2** key
-(`GUARDBOT_ETHERSCAN_KEY`); Base / Optimism / Polygon use the built-in free-RPC scanner. **BSC has
-no free `getLogs`** (every public BSC RPC returns `limit exceeded`), so it is reported as
-`degraded` until you add a keyed provider — never counted as clean. Keys live only in your local
-`.env` (gitignored, never shipped):
+(`GUARDBOT_ETHERSCAN_KEY`); Base / Optimism use the built-in free-RPC scanner; BSC uses the probe
+above. No chain is silently skipped: each is reported as `scanned`, `probed`, `partial`, or
+`degraded`. Keys are optional and live only in your local `.env` (gitignored, never shipped):
 ```bash
 echo 'GUARDBOT_ETHERSCAN_KEY=<your key>' >> .env   # free, covers eth/arbitrum/polygon
 echo 'GUARDBOT_ALCHEMY_KEY=<your key>'   >> .env   # used for eth_call (allowance/symbol)
@@ -99,7 +116,8 @@ Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalan
       live, private, bring-your-own-key; the "fix" side of the "prevent" side.
 - [x] Own multi-chain scanner: nonce-skip + adaptive parallel `getLogs` + local incremental
       index (µs cached paint → ~2s live), partial ranges surfaced, never silently dropped.
-- [ ] BSC full-history source (no free `getLogs`; needs a keyed provider).
+- [x] BSC covered with **no** log history and **no** paid provider: Multicall3 present-probing over
+      a chain-mined candidate universe (96.6% coverage, 3/3 ground-truth approvals recovered).
 - [ ] Revoke action (signed tx via WalletConnect).
 - [ ] VibeKit plug-in packaging + example agent.
 - [ ] Multi-chain expansion + latency SLA.
