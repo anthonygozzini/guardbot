@@ -3,8 +3,8 @@
 Before you buy a token: **is it a rug / honeypot / trap?** GuardBot answers first-hand — it
 simulates buying the token and selling it back against live liquidity — and returns **one
 verdict**, `safe | warn | block`, **with the evidence**. It never routes trades or touches
-funds: it only reads public data and simulates. No third-party safety API is consulted on EVM
-chains (Solana still falls back to RugCheck, and says so).
+funds: it only reads public data and simulates. **No third-party safety API is consulted on any
+chain** — Solana is read first-hand too (`solcheck.py`).
 
 Designed as a typed **MCP tool** an agent calls *before* it buys, plus a plain HTTP API,
 with per-call **x402** payments.
@@ -15,8 +15,41 @@ returned, how deep the pool is, which privileged functions are in the deployed b
 GuardBot does both sides of safety:
 - **Prevent** — is a token a trap *before* you buy? Answered **first-hand**: we simulate
   buying and selling it ourselves (see below), rather than asking a vendor's API.
-- **Fix / view** — `approvals`: paste any address, see standing token approvals across
-  **EVM + TRON + Solana** in one place (what single-chain revoke tools don't unify). Read-only.
+- **Fix** — `approvals` + `revoke`: paste any address, see standing approvals across
+  **EVM + TRON + Solana** in one place (what single-chain revoke tools don't unify), then take
+  a permission back with a transaction your own wallet signs.
+
+## Revoking (`revoke.py`)
+
+Seeing the danger without being able to remove it is half a tool, but writing is also where a
+safety tool can do harm, so the path is deliberately narrow. Exactly three calls can ever be
+built, each with the revoking argument hard-coded — `approve(spender, 0)`,
+`setApprovalForAll(operator, false)`, `Permit2.approve(token, spender, 0, 0)`. There is no code
+path that emits a transfer, an increase, or an arbitrary call, and the amount is a literal in the
+encoder rather than something a caller can set.
+
+Nothing is signed or broadcast server-side: `/v1/revoke` returns calldata, the page shows **the
+exact call, contract, chain and data before anything is signed**, and your own browser wallet
+signs it one at a time — or you copy the calldata to a hardware or offline signer. This page never
+sees a key and never batches signatures.
+
+One non-obvious thing it gets right: **zeroing the ERC-20 approval to Permit2 does not clear the
+grants already inside Permit2**. Those live in Permit2's own books until they expire, and must be
+zeroed there — the blind spot this tool found in reading, closed in writing.
+
+## Solana token safety (`solcheck.py`)
+
+Solana has no DEX honeypot to simulate the way EVM does; the trap is a different shape and it is
+written plainly in the mint: a **freeze authority** (someone can freeze your account — you keep the
+balance and can never sell), a **mint authority** (unlimited new supply), and the Token-2022
+extensions that can seize or tax you — **permanent delegate** (moves your tokens out of your
+wallet, unrevocably), **transfer hook** (arbitrary code on every transfer, can make selling fail),
+**transfer fee**. Plus holder concentration from `getTokenLargestAccounts`.
+
+Freeze authority is judged *together with* concentration, because on its own it does not tell a
+regulated stablecoin from a honeypot: Circle can freeze USDC and says so. Scoring it as a hard
+failure branded USDC and USDT `block` — the same false positive the EVM side had. Public Solana
+RPCs also throttle hard, and a throttled call is reported as **unknown**, never as "fine".
 
 ## Honeypot detection, done first-hand (`tokencheck.py`)
 
@@ -106,7 +139,8 @@ tests assert that real tokens are never blocked and that known honeypots and fak
 are. 35/35 pass.
 
 ## Components
-- `guard.py` — token-safety engine: `assess(chain, address)` → normalized verdict. Stdlib only.
+- `guard.py` — legacy third-party wrapper (GoPlus/RugCheck). Superseded by `tokencheck.py`
+  (EVM) and `solcheck.py` (Solana); kept only as a fallback for chains neither covers.
 - `approvals.py` — approval viewer: `approvals(address)` across EVM (Approval events + live
   allowance, the revoke.cash method), TRON (TronScan), Solana (SPL delegates via RPC).
 - `guardd.py` — HTTP daemon: `/v1/check`, `/v1/approvals`, `/view` (browser UI), x402 payments.
@@ -160,8 +194,13 @@ reported as a probe, never implied to be exhaustive.
 
 The probe runs on **every** chain, not just BSC, alongside the log scan — the two sources are
 unioned, so history is exhaustive where it's readable and the probe is the floor everywhere else.
-Universes are mined per chain (`ethereum` 12k pairs / 92.2%, `base` 4k / 97.6%, `bsc` 4k / 96.6%,
-`polygon`, `optimism`, `arbitrum` 100% of their sampled activity).
+Universes are mined per chain **and per grant kind** (ERC-20, NFT operator, Permit2), so BSC —
+which has no readable history at all — is no longer blind to NFT and Permit2 grants.
+
+**Mined data is a snapshot, and says so.** A scam deployed after the last mining run simply isn't
+in the candidate set, and a scan over stale data narrows quietly. So every result carries
+`data_age_days` per chain (or `data_age_unknown`), and once it is old enough to matter the result
+says to re-run `python3 tools/refresh.py` — one command that re-mines every universe and registry.
 
 **Don't trust the token contracts.** The probe queries contracts nobody vetted, and scam tokens
 exist whose `allowance()` returns "unlimited" for the scammer's spender *no matter who the owner
@@ -226,26 +265,29 @@ Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalan
   paid requests are rejected — never a false "paid".
 
 ## Status
-- [x] `assess()` engine on Solana (RugCheck) + EVM (GoPlus), verdict + evidence, tested on live tokens.
+- [x] First-hand safety engines: EVM buy-and-sell simulation (`tokencheck.py`) and Solana
+      mint/extension/concentration reading (`solcheck.py`). No third-party safety API.
 - [x] HTTP daemon (`/v1/check`, `/llms.txt`, `/v1/status`) + cache.
-- [x] MCP stdio server with the `check_token` tool.
+- [x] MCP stdio server: `check_token` (our engines) + `check_approvals`.
 - [x] Real x402 payments (402 `accepts` → verify + settle → verdict + `X-PAYMENT-RESPONSE`),
       tested end-to-end.
 - [x] Local-first approvals viewer (`/v1/approvals`, `/view`) across EVM + TRON + Solana —
-      live, private, bring-your-own-key; the "fix" side of the "prevent" side.
+      live, private, keyless; ERC-20 allowances, NFT operators and grants inside Permit2.
 - [x] Own multi-chain scanner: nonce-skip + adaptive parallel `getLogs` + local incremental
       index (µs cached paint → ~2s live), partial ranges surfaced, never silently dropped.
 - [x] BSC covered with **no** log history and **no** paid provider: Multicall3 present-probing over
       a chain-mined candidate universe (96.6% coverage, 3/3 ground-truth approvals recovered).
-- [ ] Revoke action (signed tx via WalletConnect).
+- [x] Revoke: exact calldata for the three revoking calls, signed by your own wallet or
+      exported to a hardware/offline signer (`revoke.py`, `/v1/revoke`).
+- [x] Freshness: mined data is timestamped, its age is reported, `tools/refresh.py` re-mines all.
+- [ ] TRON token safety (approvals are covered; a TRC-20 safety engine is not built).
+- [ ] Packaging / hosted demo — it is a local repo today.
 - [ ] VibeKit plug-in packaging + example agent.
 - [ ] Multi-chain expansion + latency SLA.
 
 ## References
 - GoPlus Security API — https://docs.gopluslabs.io/reference/api-overview
-- RugCheck REST — https://api.rugcheck.xyz/swagger/index.html
 - x402 — https://github.com/x402-foundation/x402
 - VibeKit — https://vibekit.ai/
 
-Note: GoPlus's Solana endpoint is unreliable (timeouts/null) → Solana relies on RugCheck.
 This is a safety signal on public data, not financial advice.

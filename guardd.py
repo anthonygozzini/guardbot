@@ -28,6 +28,8 @@ from urllib.parse import urlparse, parse_qs
 
 import guard
 import approvals as approvals_mod
+import revoke as revoke_mod
+import solcheck
 import tokencheck
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -162,13 +164,16 @@ def cached_assess(chain, address):
 
 LLMS = f"""# GuardBot — pre-trade safety for agents & bots
 
-Ask before you buy: is this token a rug / honeypot / trap? GuardBot aggregates
-RugCheck (Solana) and GoPlus (EVM) into ONE verdict with the evidence.
+Ask before you buy: is this token a rug / honeypot / trap? GuardBot answers first-hand —
+on EVM it simulates buying the token and selling it back against live liquidity; on Solana
+it reads the mint's authorities, Token-2022 extensions and holder concentration. No
+third-party safety API is consulted.
 
-## Endpoint
-GET /v1/check?chain=<chain>&address=<token>
-POST /v1/check  {{"chain":"solana","address":"<mint>"}}
-chain: solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalanche
+## Endpoints
+GET /v1/tokencheck?chain=<chain>&address=<token>   is this token a trap?
+GET /v1/approvals?address=<wallet>                 what has this wallet handed out?
+GET /v1/revoke?chain=&kind=&token=&spender=        calldata that takes a permission back
+chain: ethereum | bsc | base | arbitrum | polygon | optimism | solana
 
 ## Response
 {{"verdict":"safe|warn|block","score":0-100,"checks":[{{"name","status","detail","evidence"}}],"sources":[...]}}
@@ -279,9 +284,22 @@ class H(BaseHTTPRequestHandler):
             if not token:
                 return self._json(400, {"error": "address is required"})
             try:
-                self._json(200, tokencheck.check_token(chain, token))
+                if chain == "solana":
+                    self._json(200, solcheck.check_token(token))
+                else:
+                    self._json(200, tokencheck.check_token(chain, token))
             except Exception as e:
                 self._json(500, {"error": f"token check failed: {e}"})
+        elif u.path == "/v1/revoke":
+            # Builds the revoking calldata only. Nothing is signed or broadcast server-side:
+            # the wallet does that, so this endpoint can never move anyone's funds.
+            q = parse_qs(u.query)
+            g = lambda k: (q.get(k) or [""])[0].strip()
+            try:
+                self._json(200, revoke_mod.revoke_tx(g("chain"), g("kind"),
+                                                     g("token"), g("spender")))
+            except Exception as e:
+                self._json(500, {"error": f"could not build the revoke tx: {e}"})
         elif u.path == "/v1/approvals":
             # local-first & private: nothing is stored server-side or published. cached=1 returns
             # the local index's last result instantly (µs); otherwise a live scan (~seconds).

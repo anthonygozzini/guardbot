@@ -19,6 +19,7 @@ import collections
 import concurrent.futures
 import json
 import os
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -89,6 +90,7 @@ def mine(chain):
         "spenders": {s: n for s, n in top},
         "meta": {"unique_spenders": len(breadth), "distinct_owners": len(all_owners),
                  "kept": len(top), "max_breadth": top[0][1] if top else 0,
+                 "mined_at": int(time.time()),
                  "windows": WINDOWS, "window_blocks": win, "stride": stride},
     }
     with open(OUT, "w") as f:

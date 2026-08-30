@@ -30,6 +30,17 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
 .tag-live{background:#0d2a20;color:var(--accent)}
 .fake{color:var(--risk);font-weight:600}
 .chip-est{border-color:var(--accent);color:var(--accent)}
+button.rev{background:transparent;border:1px solid var(--line);color:var(--soft);border-radius:8px;
+padding:5px 11px;font-size:.78rem;font-weight:600;cursor:pointer}
+button.rev:hover{border-color:var(--risk);color:var(--risk)}
+.signbox{margin-top:18px;border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--panel)}
+.signhead{font-weight:700;margin-bottom:10px}
+.sigline{margin:3px 0;font-size:.85rem;color:var(--soft)}
+.sigline b{color:var(--faint);display:inline-block;min-width:52px}
+.sigdata{margin:10px 0;padding:9px;background:var(--bg);border-radius:8px;font-size:.72rem;
+word-break:break-all;color:var(--faint);max-height:88px;overflow:auto}
+.sigacts{display:flex;gap:9px;margin-top:6px}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--soft)}
 .tname{color:var(--soft);font-size:.78rem}
 @keyframes pulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.tag-cached{animation:none}}
@@ -59,6 +70,58 @@ a{color:var(--accent)}
 </div>
 <script>
 var f=document.getElementById('f'),addr=document.getElementById('addr'),go=document.getElementById('go'),out=document.getElementById('out');
+var CHAIN_IDS={ethereum:1,bsc:56,polygon:137,base:8453,arbitrum:42161,optimism:10};
+
+// Revoking is the one thing here that writes. The rules are deliberate: the calldata is built
+// server-side (only three revoking calls exist there), shown in full BEFORE anything is signed,
+// signed one at a time by your own wallet, and always exportable so a hardware or offline signer
+// can do it instead. This page never sees a key and never batches signatures.
+function bindRevoke(){
+  var panel=document.getElementById('sign');
+  Array.prototype.forEach.call(document.querySelectorAll('button.rev'),function(b){
+    b.addEventListener('click',function(){
+      var q='chain='+encodeURIComponent(b.dataset.chain)+'&kind='+encodeURIComponent(b.dataset.kind)
+           +'&token='+encodeURIComponent(b.dataset.token)+'&spender='+encodeURIComponent(b.dataset.spender);
+      panel.innerHTML='<div class="status">Building the transaction…</div>';
+      fetch('/v1/revoke?'+q).then(function(r){return r.json();}).then(function(d){
+        if(d.error){panel.innerHTML='<div class="err">'+esc(d.error)+'</div>';return;}
+        panel.innerHTML=
+          '<div class="signbox"><div class="signhead">This is exactly what you would sign</div>'
+          +'<div class="mono sigline"><b>call</b> '+esc(d.human.call)+'</div>'
+          +'<div class="mono sigline"><b>to</b> '+esc(d.tx.to)+'</div>'
+          +'<div class="mono sigline"><b>chain</b> '+esc(d.chain)+' ('+d.chain_id+')  <b>value</b> 0</div>'
+          +'<div class="sigline">'+esc(d.human.effect)+'</div>'
+          +'<div class="mono sigdata">'+esc(d.tx.data)+'</div>'
+          +'<div class="sigacts"><button id="dosign">Sign in my wallet</button>'
+          +'<button id="docopy" class="ghost">Copy calldata</button></div>'
+          +'<div id="signmsg" class="hint"></div></div>';
+        var msg=document.getElementById('signmsg');
+        document.getElementById('docopy').onclick=function(){
+          navigator.clipboard.writeText(JSON.stringify(d.tx,null,2)).then(function(){
+            msg.textContent='Copied — sign it with a hardware or offline signer.';});
+        };
+        document.getElementById('dosign').onclick=function(){
+          var eth=window.ethereum;
+          if(!eth){msg.textContent='No browser wallet detected. Use “Copy calldata” instead.';return;}
+          msg.textContent='Check your wallet…';
+          eth.request({method:'eth_requestAccounts'}).then(function(accts){
+            return eth.request({method:'wallet_switchEthereumChain',
+                                params:[{chainId:d.tx.chainId}]})
+              .catch(function(e){ if(e && e.code===4902){throw new Error('Add the '+d.chain+' network to your wallet first.');} throw e; })
+              .then(function(){
+                return eth.request({method:'eth_sendTransaction',
+                  params:[{from:accts[0],to:d.tx.to,data:d.tx.data,value:'0x0'}]});
+              });
+          }).then(function(hash){
+            msg.innerHTML='Sent: <span class="mono">'+esc(hash)+'</span>. Re-scan once it confirms.';
+          }).catch(function(e){
+            msg.textContent='Not signed: '+((e&&e.message)||'cancelled');
+          });
+        };
+      }).catch(function(e){panel.innerHTML='<div class="err">'+esc(e.message)+'</div>';});
+    });
+  });
+}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function short(s){s=String(s||'');return s.length>18?s.slice(0,8)+'…'+s.slice(-6):s;}
 function render(d,mode){
@@ -122,9 +185,15 @@ function render(d,mode){
         +(i.evidence&&i.evidence.expires_unix
           ?'<div class="hint" style="margin:0">until '+esc(new Date(i.evidence.expires_unix*1000).toISOString().slice(0,10))+'</div>':'')
         +'</td>'
-      +'<td>'+badge+'</td></tr>';
+      +'<td>'+badge+'</td>'
+      +'<td>'+(i.chain && CHAIN_IDS[i.chain] && i.kind!=='delegate'
+        ? '<button class="rev" data-chain="'+esc(i.chain)+'" data-kind="'+esc(i.kind)
+          +'" data-token="'+esc(i.token)+'" data-spender="'+esc(i.spender)+'">Revoke</button>'
+        : '<span class="hint" style="margin:0">—</span>')+'</td></tr>';
   }).join('');
-  out.innerHTML=head+'<table><thead><tr><th>Chain</th><th>Token</th><th>Spender</th><th>Type</th><th>Risk</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  out.innerHTML=head+'<table><thead><tr><th>Chain</th><th>Token</th><th>Spender</th><th>Type</th><th>Risk</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'
+    +'<div id="sign"></div>';
+  bindRevoke();
 }
 f.addEventListener('submit',function(e){
   e.preventDefault();

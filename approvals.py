@@ -523,6 +523,19 @@ PROBE_WORKERS = 8
 _PROBE = None
 
 
+def _probe_metas(chain):
+    """Every mined meta block for a chain — the base ERC-20 set plus each extra grant kind."""
+    global _PROBE
+    if _PROBE is None:
+        _probe_universe(chain)
+    entry = (_PROBE or {}).get(chain) or {}
+    out = [entry.get("meta") or {}] if entry.get("pairs") else []
+    for k in (entry.get("kinds") or {}).values():
+        if k.get("pairs"):
+            out.append(k.get("meta") or {})
+    return [m for m in out if m]
+
+
 def _probe_universe(chain, kind="erc20"):
     """Mined candidate pairs for a chain and grant kind, or ([], {}) if none shipped."""
     global _PROBE
@@ -1285,6 +1298,30 @@ def approvals(address, chain=None, cached_only=False):
         out["note"] = ("These chains have no readable log history on the free public RPCs and no "
                        "probe universe to fall back on, so they could not be scanned. Mine a probe "
                        "universe for them (tools/mine_probe_universe.py) or add an explorer key.")
+    # Mined data is a SNAPSHOT: a scam deployed after the last mining run is not in the candidate
+    # set, so a probe over stale data quietly narrows without saying so. The age is therefore
+    # reported with the result, and called out once it is old enough to matter.
+    if kind == "evm":
+        ages, undated = {}, []
+        for c in EVM_CFG:
+            # a chain's candidate set is only as fresh as its OLDEST part, so take the minimum
+            # across every grant kind rather than flattering the result with the newest one
+            stamps = [m["mined_at"] for m in _probe_metas(c) if m.get("mined_at")]
+            if stamps:
+                ages[c] = int((time.time() - min(stamps)) / 86400)
+            elif _probe_metas(c):
+                undated.append(c)
+        if ages:
+            out["data_age_days"] = ages
+        if undated:
+            out["data_age_unknown"] = undated
+        oldest = max(ages.values()) if ages else None
+        if undated or (oldest is not None and oldest >= 30):
+            when = (f"up to {oldest} days old" if oldest is not None and oldest >= 30
+                    else "of unknown age")
+            out["data_stale_note"] = (
+                f"the mined candidate data is {when}, so tokens and spenders that appeared "
+                "since are not in it — re-run `python3 tools/refresh.py`")
     if probed:
         cov = {c: (_probe_universe(c)[1] or {}).get("coverage_pct") for c in probed}
         out["probed_chains"] = probed

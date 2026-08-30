@@ -168,6 +168,66 @@ class TestSpenderTrust(unittest.TestCase):
         self.assertLess(it["risk_score"], 60)   # unlimited(40) - established(10) = 30 = low, not high
 
 
+class TestRevoke(unittest.TestCase):
+    """The only writing path in the tool. It must be able to emit exactly three calls, each with
+    the revoking argument hard-coded, and refuse everything else."""
+
+    ERC20 = "0x55d398326f99059ff775485246999027b3197955"
+    SPENDER = "0x69460570c93f9de5e2edbc3052bf10125f0ca22d"
+
+    def test_erc20_sets_allowance_to_zero(self):
+        import revoke
+        r = revoke.revoke_tx("bsc", "approval", self.ERC20, self.SPENDER)
+        self.assertEqual(r["tx"]["to"], self.ERC20)
+        self.assertTrue(r["tx"]["data"].startswith(selector("approve(address,uint256)")))
+        self.assertTrue(r["tx"]["data"].endswith("0" * 64))     # the amount is literally zero
+        self.assertEqual(r["tx"]["value"], "0x0")
+        self.assertEqual(r["tx"]["chainId"], hex(56))
+
+    def test_nft_operator_is_set_to_false(self):
+        import revoke
+        r = revoke.revoke_tx("base", "nft_operator", self.ERC20, self.SPENDER)
+        self.assertTrue(r["tx"]["data"].startswith(selector("setApprovalForAll(address,bool)")))
+        self.assertTrue(r["tx"]["data"].endswith("0" * 64))     # false
+
+    def test_permit2_targets_permit2_not_the_token(self):
+        """Zeroing the ERC-20 approval to Permit2 does NOT clear grants already inside it."""
+        import revoke
+        r = revoke.revoke_tx("ethereum", "permit2", self.ERC20, self.SPENDER)
+        self.assertEqual(r["tx"]["to"], revoke.PERMIT2.lower())
+        self.assertTrue(r["tx"]["data"].endswith("0" * 128))    # amount 0 AND expiration 0
+
+    def test_refuses_anything_that_is_not_a_revocation(self):
+        import revoke
+        for kind in ("transfer", "approve_max", "", "delegate"):
+            self.assertIn("error", revoke.revoke_tx("bsc", kind, self.ERC20, self.SPENDER))
+
+    def test_refuses_non_evm_and_bad_addresses(self):
+        import revoke
+        self.assertIn("error", revoke.revoke_tx("solana", "approval", self.ERC20, self.SPENDER))
+        self.assertIn("error", revoke.revoke_tx("bsc", "approval", "not-an-address", self.SPENDER))
+
+
+class TestSolanaSafety(unittest.TestCase):
+    def test_token2022_extension_parser(self):
+        import solcheck
+        base = b"\x00" * 165 + b"\x01"          # base mint + account type byte
+        tlv = (12).to_bytes(2, "little") + (0).to_bytes(2, "little")   # permanent delegate
+        import base64
+        self.assertIn(12, solcheck._extensions(base64.b64encode(base + tlv).decode()))
+
+    def test_plain_mint_has_no_extensions(self):
+        import base64
+        import solcheck
+        self.assertEqual(solcheck._extensions(base64.b64encode(b"\x00" * 82).decode()), [])
+
+    def test_throttled_rpc_is_not_read_as_an_answer(self):
+        import solcheck
+        with mock.patch.object(solcheck, "_rpc", lambda *a, **k: {"error": "429"}):
+            top1, top10, n = solcheck._concentration("mint", 1000, 6)
+        self.assertIsNone(top1)   # unknown, never "fine"
+
+
 class TestChainDetection(unittest.TestCase):
     def test_detects_each_family(self):
         self.assertEqual(approvals.detect_chain("0x" + "ab" * 20), "evm")

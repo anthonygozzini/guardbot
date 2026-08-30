@@ -18,6 +18,7 @@ import collections
 import concurrent.futures
 import json
 import os
+import time
 import sys
 import urllib.request
 
@@ -137,6 +138,7 @@ def mine(chain, top_n=4000, kind="erc20"):
         "pairs": [[t, s] for (t, s), _ in keep],
         "meta": {"sampled_events": total, "unique_pairs": len(pairs),
                  "kept": len(keep), "coverage_pct": round(covered, 1),
+                 "mined_at": int(time.time()),
                  "windows": n_win, "window_blocks": win, "stride": step},
     }
     if kind == "erc20":

@@ -14,6 +14,7 @@ import json
 import sys
 
 import guard
+import solcheck
 import tokencheck
 import approvals as approvals_mod
 
@@ -94,7 +95,9 @@ def handle(msg):
                 verdict = approvals_mod.approvals(args.get("address", ""))
             else:
                 chain = (args.get("chain") or "").lower()
-                if chain in tokencheck.RPCS:
+                if chain == "solana":
+                    verdict = solcheck.check_token(args.get("address", ""))
+                elif chain in tokencheck.RPCS:
                     verdict = tokencheck.check_token(chain, args.get("address", ""))
                 else:
                     # our simulator has no venue on this chain — say which engine answered
