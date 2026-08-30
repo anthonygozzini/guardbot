@@ -183,20 +183,17 @@ de-alarmed, and a GoPlus-malicious flag overrides establishment every time. Resu
 wallet: the five BSC approvals now show `deBridge`, `Rango`, `Bridgers`, `CoW Protocol` at `low`,
 matching the explorer, instead of five nameless `high` rows.
 
-**Are keys still required? No.** Same address, same result:
+**No keyed RPC provider.** Every `eth_call` — allowance, symbol, name, nonce, the Multicall3 probe
+— runs on **free public RPCs**, with several per chain and a liveness pick so a dead endpoint can't
+be mistaken for a clean wallet. Proven: same address, same result with and without keys, so there
+is nothing to rate-limit, pay for, or leak. Nothing is skipped either — each chain is reported as
+`scanned`, `probed`, `partial`, or `degraded`.
 
-| mode | time | chains | approvals found |
-|---|---|---|---|
-| with Etherscan + Alchemy keys | 2.4s | 6/6, none degraded | 4 |
-| **no keys at all** (public RPCs only) | 10.0s | 6/6, none degraded | **4** |
-| cached re-open | 0.1ms | — | 4 |
-
-Keys buy **speed and exhaustive history**, not coverage. Without them nothing is skipped: each
-chain is reported as `scanned`, `probed`, `partial`, or `degraded`. Keys are optional and live
-only in your local `.env` (gitignored, never shipped):
+The one optional key is a free **Etherscan V2** key, which only speeds up *log history* on the three
+chains its free tier covers (Ethereum / Arbitrum / Polygon); everything else, including all
+`eth_call`, is public. It lives only in your local `.env` (gitignored, never shipped):
 ```bash
-echo 'GUARDBOT_ETHERSCAN_KEY=<your key>' >> .env   # free, covers eth/arbitrum/polygon
-echo 'GUARDBOT_ALCHEMY_KEY=<your key>'   >> .env   # used for eth_call (allowance/symbol)
+echo 'GUARDBOT_ETHERSCAN_KEY=<your key>' >> .env   # optional, free; covers eth/arbitrum/polygon history
 ```
 
 ## Run

@@ -70,7 +70,7 @@ function render(d,mode){
   var head='<div class="status">'+tag+' <b>'+esc(d.address_type)+'</b> · scanned <b>'+esc(scanned||d.address_type)+'</b> · '
     +'<b>'+d.count+'</b> approvals, <b style="color:var(--risk)">'+d.risky_count+'</b> risky</div>';
   if(d.degraded_chains&&d.degraded_chains.length){
-    var note=d.note||'Add a free Alchemy key (GUARDBOT_ALCHEMY_KEY) in your local .env for full coverage.';
+    var note=d.note||'Mine a probe universe for this chain (tools/mine_probe_universe.py) for coverage.';
     head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
       +d.degraded_chains.length+' EVM chains not scanned ('+esc(d.degraded_chains.join(', '))
       +'). '+esc(note)+'</div>';

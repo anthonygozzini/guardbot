@@ -66,12 +66,9 @@ ETHERSCAN_KEY = os.environ.get("GUARDBOT_ETHERSCAN_KEY", "")
 # request falls through to our own scanner. Gating on the key alone quietly launched four
 # full-history sweeps on chains it never covered.
 ETHERSCAN_FREE_CHAINS = {"ethereum", "arbitrum", "polygon"}
-# Alchemy is the primary EVM logs source: its getLogs limits by RESULT COUNT (<=10k), not by
-# block range, so an owner-filtered Approval query passes over full chain history. One free key
-# covers all these chains. This is the approach revoke.cash-class tools actually use.
-ALCHEMY_KEY = os.environ.get("GUARDBOT_ALCHEMY_KEY", "")
-ALCHEMY_NET = {"ethereum": "eth-mainnet", "base": "base-mainnet", "arbitrum": "arb-mainnet",
-               "optimism": "opt-mainnet", "polygon": "polygon-mainnet", "bsc": "bnb-mainnet"}
+# No keyed RPC provider. Everything runs on free public RPCs — proven to give the same result as
+# a keyed setup (see README), so there is nothing to rate-limit, pay for, or leak. eth_call
+# (allowance/symbol/name/nonce/Multicall3) goes to the public endpoints below.
 # per chain: id + public RPCs for eth_call (several, because free endpoints die without notice —
 # polygon-rpc.com started returning 401 and a single hardcoded RPC turned that into a false clean).
 EVM_CFG = {
@@ -94,10 +91,8 @@ _pick_lock = threading.Lock()
 
 
 def _chain_rpc(name, cfg):
-    """Best RPC for eth_call (allowance/symbol): Alchemy if keyed, else the first public
-    endpoint that actually answers (probed once per process, then remembered)."""
-    if ALCHEMY_KEY and name in ALCHEMY_NET:
-        return f"https://{ALCHEMY_NET[name]}.g.alchemy.com/v2/{ALCHEMY_KEY}"
+    """RPC for eth_call (allowance/symbol/name): the first public endpoint that actually answers
+    (probed once per process, then remembered). No keyed provider."""
     with _pick_lock:
         hit = _RPC_PICK.get(name)
     if hit:
@@ -435,7 +430,7 @@ def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=Fa
     from_block=0 = full history; >0 = incremental (only new blocks, driven by the local index).
     Fast pre-check skips fresh scans of chains the address never used (nonce==0). Source order:
     Etherscan free (Ethereum/Arbitrum/Polygon) → our own adaptive scanner over a free public-RPC
-    pool. Alchemy is used only for eth_call (its free getLogs caps at 10 blocks).
+    pool. All eth_call goes to public RPCs — no keyed provider.
     ok=False = no source could scan this chain (degraded). partial=True = scanned but some block
     ranges could not be read (reported, never silently treated as clean)."""
     rpc = _chain_rpc(name, cfg)
@@ -1287,10 +1282,9 @@ def approvals(address, chain=None, cached_only=False):
     }
     if degraded:
         out["degraded_chains"] = degraded
-        out["note"] = ("These chains have no free full-history log source (Etherscan's free "
-                       "tier covers only Ethereum/Arbitrum/Polygon; Alchemy's free tier caps "
-                       "getLogs at 10 blocks). For them use a paid provider (Alchemy PAYG or "
-                       "Etherscan) or a per-chain explorer key.")
+        out["note"] = ("These chains have no readable log history on the free public RPCs and no "
+                       "probe universe to fall back on, so they could not be scanned. Mine a probe "
+                       "universe for them (tools/mine_probe_universe.py) or add an explorer key.")
     if probed:
         cov = {c: (_probe_universe(c)[1] or {}).get("coverage_pct") for c in probed}
         out["probed_chains"] = probed
