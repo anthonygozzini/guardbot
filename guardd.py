@@ -31,6 +31,22 @@ import approvals as approvals_mod
 import tokencheck
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _code_version():
+    """Which commit this process actually loaded. A long-lived daemon keeps running the code
+    it started with, so a fix can look like it did nothing — say the version out loud."""
+    try:
+        import subprocess
+        out = subprocess.run(["git", "-C", BASE, "log", "-1", "--format=%h %cd",
+                              "--date=format:%Y-%m-%d %H:%M"],
+                             capture_output=True, text=True, timeout=5)
+        return (out.stdout or "").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+CODE_VERSION = _code_version()
 PORT = int(os.environ.get("GUARDBOT_PORT", "8403"))
 PRICE_USDC = float(os.environ.get("GUARDBOT_PRICE_USDC", "0"))
 PAY_TO = os.environ.get("GUARDBOT_PAY_TO", "")
@@ -250,7 +266,8 @@ class H(BaseHTTPRequestHandler):
             self._json(200, {"service": "guardbot",
                              "mode": "free" if PRICE_USDC <= 0 else ("x402" if (FACILITATOR and PAY_TO) else "x402-unconfigured"),
                              "price_usdc": PRICE_USDC, "network": NETWORK,
-                             "uptime_s": int(time.time() - START), **s})
+                             "uptime_s": int(time.time() - START),
+                             "code_version": CODE_VERSION, **s})
         elif u.path == "/v1/check":
             q = parse_qs(u.query)
             self._check((q.get("chain") or [""])[0], (q.get("address") or [""])[0])
@@ -298,7 +315,9 @@ if __name__ == "__main__":
         mode = f"{PRICE_USDC} USDC/call · REAL x402 on {NETWORK}"
     else:
         mode = f"{PRICE_USDC} USDC/call · WARNING x402 NOT configured (missing facilitator/pay_to/asset) -> paid requests rejected"
-    print(f"\n  GuardBot running  ·  payment: {mode}", flush=True)
+    print(f"\n  GuardBot running  ·  code {CODE_VERSION}  ·  payment: {mode}", flush=True)
+    print("  (restart me after a git pull — a running daemon keeps the code it started with)",
+          flush=True)
     print(f"  ➜  Approvals viewer:  http://127.0.0.1:{PORT}/view", flush=True)
     print(f"  ➜  API / agents:      http://127.0.0.1:{PORT}/llms.txt", flush=True)
     print("  (Ctrl+C to stop)\n", flush=True)
