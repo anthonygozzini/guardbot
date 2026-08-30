@@ -352,6 +352,7 @@ def _registry(chain):
 
 
 IMPERSONATION_RATIO = 100   # leader's pool must dwarf this one by this multiple to call it out
+OWN_MARKET_FLOOR = 10 ** 18  # one unit of native coin: below this there is no market to speak of
 
 
 def _identity(chain, token, symbol, own_reserve):
@@ -359,9 +360,19 @@ def _identity(chain, token, symbol, own_reserve):
 
     A scam token can call itself USDT for free — four BSC contracts do. What it cannot fake
     cheaply is depth: the real one trades against tens of thousands of BNB. So the test is a
-    RATIO against the leading claimant of the same symbol, not any absolute size: if another
-    contract wearing this name has a pool orders of magnitude bigger, this one is wearing a
-    costume. Normalizer is the symbol's own leader, so it works for obscure tickers too."""
+    RATIO against the leading claimant of the same symbol, never an absolute size, which is
+    what lets it work for obscure tickers too.
+
+    But a big ratio alone does not make an impostor. Plenty of tickers are shared by tokens
+    that are all real — a chain's native stablecoin and its bridged twin both answer "USDC",
+    and 29 contested symbols here have more than one genuine market behind them. So the
+    accusation also requires that this contract have no market of its own: an impostor lives
+    off the borrowed name because it has nothing else. One with real liquidity gets the
+    honest answer instead — the ticker is shared, look at the address.
+
+    Note this only ever compares contracts claiming the SAME symbol string, so distinct real
+    stablecoins (USDe, FDUSD, PYUSD, USDT0 …) never collide with each other by construction;
+    no list of "approved" tokens is needed, and none is kept."""
     if not symbol:
         return None
     entries = _registry(chain).get(symbol.upper())
@@ -371,11 +382,14 @@ def _identity(chain, token, symbol, own_reserve):
     if top_addr.lower() == token.lower():
         return {"canonical": True, "symbol": symbol, "claimants": len(entries)}
     mine = max(int(own_reserve or 0), 1)
+    base = {"canonical": False, "symbol": symbol, "claimants": len(entries),
+            "leader": top_addr, "leader_reserve": str(top_res), "this_reserve": str(mine),
+            "ratio": int(top_res / mine)}
     if top_res >= IMPERSONATION_RATIO * mine:
-        return {"canonical": False, "symbol": symbol, "claimants": len(entries),
-                "leader": top_addr, "leader_reserve": str(top_res), "this_reserve": str(mine),
-                "ratio": int(top_res / mine)}
-    return {"canonical": False, "symbol": symbol, "claimants": len(entries), "ambiguous": True}
+        base["impostor"] = mine < OWN_MARKET_FLOOR      # dwarfed AND no market of its own
+        return base
+    base["ambiguous"] = True
+    return base
 
 
 def _symbol_of(url, token):
@@ -508,6 +522,13 @@ def check_token(chain, token, rpcs=None):
                 f"{ident['claimants']} different contracts on this chain call themselves "
                 f"'{sym}' — the name tells you nothing; check the address", 15,
                 {"symbol": sym, "claimants": ident["claimants"]})
+        elif not ident.get("impostor"):
+            add("identity", "warn",
+                f"'{sym}' is also the ticker of a far bigger market at {ident['leader'][:10]}… "
+                f"({ident['ratio']}x this one) — this token has its own liquidity, so it is not "
+                "a pure impostor, but you may not be buying the one you have in mind", 20,
+                {"symbol": sym, "bigger_market": ident["leader"],
+                 "liquidity_ratio": ident["ratio"], "claimants": ident["claimants"]})
         else:
             add("identity", "fail",
                 f"this calls itself '{sym}', but the '{sym}' the market actually trades sits at "
@@ -573,7 +594,11 @@ def check_token(chain, token, rpcs=None):
 
     score = max(0, min(100, score))
     fails = [c for c in checks if c["status"] == "fail"]
-    verdict = "block" if fails or score < 40 else ("warn" if score < 75 else "safe")
+    # "block" means you would lose money here, so only a demonstrated hard failure earns it:
+    # a honeypot, an unbuyable token, an impostor, punitive fees, an empty pool. Soft warnings
+    # must never add up into one — a legitimate bridged USDC that buys and sells perfectly was
+    # being blocked purely for having a proxy, an owner and unburned LP.
+    verdict = "block" if fails else ("warn" if score < 75 else "safe")
     return {"chain": chain, "token": token, "verdict": verdict, "score": score,
             "checks": checks,
             "simulation": {k: (str(v) if isinstance(v, int) and abs(v) > 2**53 else v)

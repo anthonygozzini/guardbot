@@ -48,9 +48,24 @@ zero. So `tools/mine_token_registry.py` mines, per chain, which contracts claim 
 how deep each one's pools run (summed across V2 **and** every Uniswap-V3 fee tier). The test is a
 **ratio against that symbol's own leader**, not any fixed size, so it works for obscure tickers too.
 
-Results: real USDT → `safe`, all three fakes → `block`. In the approvals viewer a contested token
-now reads **⚠ claims "USDT"** with the real address in the tooltip, never a bare `USDT`, and the
-approval is scored critical.
+The check is generic — it covers every contested symbol found (**406 across 5 chains**), not a
+curated shortlist. And because it only ever compares contracts claiming the *same* symbol string,
+distinct real stablecoins (USDe, FDUSD, TUSD, PYUSD, GHO, crvUSD, USD1, USDD…) never collide with
+each other by construction; no allow-list of "approved" tokens exists or is needed.
+
+A big ratio alone is not guilt: **29 contested symbols have more than one genuine market behind
+them** — a chain's native stablecoin and its bridged twin both answer to `USDC`. So the accusation
+also requires that the contract have *no market of its own*; an impostor lives off the borrowed
+name because it has nothing else. One with real liquidity gets the honest answer instead: the
+ticker is shared, look at the address.
+
+Results: real USDT → `safe`, all three fakes → `block`, bridged USDC → `warn` (shared ticker, real
+market). In the approvals viewer a contested token reads **⚠ claims "USDT"** with the real address
+in the tooltip, never a bare `USDT`, and the approval is scored critical.
+
+`block` is also reserved for demonstrated hard failures — honeypot, unbuyable, impostor, punitive
+fees, empty pool. Soft warnings no longer add up into one: a legitimate bridged USDC that buys and
+sells perfectly was being blocked purely for having a proxy, an owner and unburned LP.
 
 Measuring V2 pools alone had flagged the genuine native USDC on Arbitrum as an impostor — most of
 its liquidity lives in V3. The fix was to measure the market properly, not to soften the check.

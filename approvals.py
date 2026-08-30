@@ -842,13 +842,22 @@ def _flag_impersonation(items):
         entries = _registry(it["chain"]).get(sym.upper())
         if not entries:
             continue
-        leader = entries[0][0].lower()
+        leader, leader_res = entries[0][0].lower(), int(entries[0][1])
         if leader == (it.get("token") or "").lower():
             it["symbol_verified"] = True
-        else:
-            it["symbol_verified"] = False
-            it["impersonates"] = leader
-            it["symbol_claimants"] = len(entries)
+            continue
+        mine = 0
+        for a, r in entries:
+            if a.lower() == (it.get("token") or "").lower():
+                mine = int(r)
+        it["symbol_claimants"] = len(entries)
+        it["impersonates"] = leader
+        # Same rule as tokencheck: dwarfed AND with no market of its own = wearing the name.
+        # A contested ticker where this token has real liquidity is shared, not stolen.
+        it["symbol_verified"] = False if (leader_res >= 100 * max(mine, 1)
+                                          and mine < 10 ** 18) else None
+        if it["symbol_verified"] is None:
+            it["symbol_shared"] = True
     return items
 
 
