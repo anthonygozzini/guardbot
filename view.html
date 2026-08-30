@@ -29,6 +29,8 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
 .tag-cached{background:#2a1f0f;color:var(--warn);animation:pulse 1.1s ease-in-out infinite}
 .tag-live{background:#0d2a20;color:var(--accent)}
 .fake{color:var(--risk);font-weight:600}
+.chip-est{border-color:var(--accent);color:var(--accent)}
+.tname{color:var(--soft);font-size:.78rem}
 @keyframes pulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.tag-cached{animation:none}}
 .badge{font-family:var(--mono);font-size:.68rem;padding:2px 8px;border-radius:100px;font-weight:600}
@@ -90,10 +92,16 @@ function render(d,mode){
     var lv=i.risk_level||'medium';
     var badge='<span class="lvl lvl-'+esc(lv)+'">'+esc(lv)+' · '+(i.risk_score==null?'?':i.risk_score)+'</span>'
       +(i.unlimited?' <span class="chip" title="unlimited allowance">∞</span>':'');
-    var spend=i.spender_name
-      ? '<span title="'+esc(i.spender)+'">'+esc(i.spender_name)+'</span> <span class="chip">known</span>'
-      : '<span class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</span>'
+    var spend;
+    if(i.spender_trust==='established'){
+      spend='<span class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</span>'
+        +' <span class="chip chip-est" title="'+esc(i.spender_name||'')+'">established</span>';
+    } else if(i.spender_name){
+      spend='<span title="'+esc(i.spender)+'">'+esc(i.spender_name)+'</span> <span class="chip">known</span>';
+    } else {
+      spend='<span class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</span>'
         +(i.spender_trust==='unknown'?' <span class="chip">unknown</span>':'');
+    }
     var tok;
     if(i.symbol_verified===false){
       tok='<span class="fake" title="This contract calls itself '+esc(i.token_symbol)
@@ -104,8 +112,10 @@ function render(d,mode){
     } else {
       tok=esc(i.token_symbol||'—');
     }
+    var tname=(i.token_name&&i.token_name!==i.token_symbol)
+      ? '<div class="tname" title="on-chain name()">'+esc(i.token_name)+'</div>' : '';
     return '<tr><td><span class="chip">'+esc(i.chain)+'</span></td>'
-      +'<td>'+tok+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
+      +'<td>'+tok+tname+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
       +'<td>'+spend+'</td>'
       +'<td class="mono">'+esc({'approval':'token','nft_operator':'NFT · all','permit2':'via Permit2',
                                 'delegate':'delegate'}[i.kind]||i.kind)

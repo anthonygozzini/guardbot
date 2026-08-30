@@ -494,15 +494,23 @@ def _allowance(rpc, owner, token, spender):
         return -1   # unknown (call failed) — treat as "still present" to avoid false clear
 
 
-def _symbol(rpc, token):
+def _erc20_string(rpc, token, sel):
     try:
-        r = _rpc(rpc, "eth_call", [{"to": token, "data": "0x95d89b41"}, "latest"])  # symbol()
+        r = _rpc(rpc, "eth_call", [{"to": token, "data": sel}, "latest"])
         if r and r != "0x":
             b = bytes.fromhex(r[2:])
             return b[64:].split(b"\x00")[0].decode("utf-8", "ignore").strip() or None
     except Exception:
         pass
     return None
+
+
+def _symbol(rpc, token):
+    return _erc20_string(rpc, token, "0x95d89b41")   # symbol()
+
+
+def _name(rpc, token):
+    return _erc20_string(rpc, token, "0x06fdde03")   # name() — the fuller label explorers show
 
 
 # ---------------- probe: read the PRESENT when the PAST is unreadable ----------------
@@ -761,7 +769,7 @@ def _resolve_pairs(rpc, name, owner, pairs):
     (skip); this is the current on-chain truth, re-checked every scan even when pairs are cached."""
     if not pairs:
         return []
-    sym_cache, sym_lock = {}, threading.Lock()
+    sym_cache, name_cache, sym_lock = {}, {}, threading.Lock()
 
     def symbol(token):
         with sym_lock:
@@ -770,6 +778,15 @@ def _resolve_pairs(rpc, name, owner, pairs):
         s = _symbol(rpc, token)
         with sym_lock:
             sym_cache[token] = s
+        return s
+
+    def tname(token):
+        with sym_lock:
+            if token in name_cache:
+                return name_cache[token]
+        s = _name(rpc, token)
+        with sym_lock:
+            name_cache[token] = s
         return s
 
     def resolve(grant):
@@ -790,7 +807,7 @@ def _resolve_pairs(rpc, name, owner, pairs):
                 return None
             return {
                 "chain": name, "kind": "nft_operator",
-                "token": token, "token_symbol": symbol(token),
+                "token": token, "token_symbol": symbol(token), "token_name": tname(token),
                 "spender": spender,
                 "amount": "every NFT in this collection", "unlimited": True, "risky": True,
                 "evidence": {"isApprovedForAll": True},
@@ -805,7 +822,7 @@ def _resolve_pairs(rpc, name, owner, pairs):
             unlimited = amount >= (1 << 160) - 1
             return {
                 "chain": name, "kind": "permit2",
-                "token": token, "token_symbol": symbol(token),
+                "token": token, "token_symbol": symbol(token), "token_name": tname(token),
                 "spender": spender,
                 "amount": "unlimited" if unlimited else str(amount),
                 "unlimited": unlimited, "risky": True,
@@ -818,7 +835,7 @@ def _resolve_pairs(rpc, name, owner, pairs):
         unlimited = cur >= UNLIMITED
         return {
             "chain": name, "kind": "approval",
-            "token": token, "token_symbol": symbol(token),
+            "token": token, "token_symbol": symbol(token), "token_name": tname(token),
             "spender": spender,
             "amount": "unknown" if cur < 0 else ("unlimited" if unlimited else str(cur)),
             "unlimited": unlimited, "risky": unlimited,
@@ -1046,16 +1063,57 @@ def _name_solana_tokens(items):
 
 # ---------------- leveled risk (exposure + spender trust) ----------------
 # Common, legitimate spenders — a known interaction here is genuine, not a threat.
+# A human name for a spender is off-chain data — it cannot be derived, so the well-known ones are
+# curated here (as revoke.cash does too). These contracts sit at the SAME address on every EVM
+# chain, so one entry covers all chains. Names marked "(BscScan)" are the explorer's own public
+# tag for that exact address, taken from a real approval list, not guessed.
 KNOWN_SPENDERS = {
     "0x000000000022d473030f116ddee9f6b43ac78ba3": "Permit2 (Uniswap)",
     "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
     "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router",
     "0x66a9893cc07d91d95644aedd05d03f95e1dba8af": "Uniswap Universal Router",
-    "0x1111111254eeb25477b68fb85ed929f73a960582": "1inch Router",
+    "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad": "Uniswap Universal Router",
+    "0x1111111254eeb25477b68fb85ed929f73a960582": "1inch Router v5",
     "0x111111125421ca6dc452d289314280a0f8842a65": "1inch Router v6",
     "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Exchange Proxy",
+    "0xc92e8bdf79f0507f65a392b0ab4667716bfe0110": "CoW Protocol (GPv2VaultRelayer)",
+    "0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae": "LI.FI Diamond",
+    "0x69460570c93f9de5e2edbc3052bf10125f0ca22d": "Rango",            # BscScan
+    "0x663dc15d3c1ac63ff12e45ab68fea3f0a883c251": "deBridge",         # BscScan
+    "0xb685760ebd368a891f27ae547391f4e2a289895b": "Bridgers",         # BscScan
+    "0x10ed43c718714eb63d5aa57b78b54704e256024e": "PancakeSwap V2 Router",
+    "0x13f4ea83d0bd40e75c8222255bc855a974568dd4": "PancakeSwap Universal Router",
 }
 LEVELS = ("minimal", "low", "medium", "high", "critical")
+
+
+_SPENDER_REG = None
+
+
+def _spender_registry(chain):
+    """Per-chain spender establishment index (distinct approvers), or {} if not mined."""
+    global _SPENDER_REG
+    if _SPENDER_REG is None:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spender_registry.json")
+        try:
+            with open(p) as f:
+                _SPENDER_REG = json.load(f)
+        except Exception:
+            _SPENDER_REG = {}
+    return _SPENDER_REG.get(chain) or {}
+
+
+def _spender_breadth(chain, spender):
+    """(distinct_approvers, is_established). A spender approved by a meaningful fraction of every
+    wallet that approved anything is an established protocol. The bar is normalized to the chain's
+    own sample — >= 1% of the distinct approvers seen, floor 300 — never a bare number, and high
+    on purpose: a drainer with a few hundred victims must NOT be de-alarmed, so being conservative
+    here fails safe. Establishment only lowers the alarm; a GoPlus-malicious flag always overrides."""
+    reg = _spender_registry(chain)
+    n = (reg.get("spenders") or {}).get((spender or "").lower(), 0)
+    owners = (reg.get("meta") or {}).get("distinct_owners", 0)
+    threshold = max(300, round(0.01 * owners))
+    return n, (n >= threshold)
 
 
 def _level(score):
@@ -1097,6 +1155,9 @@ def _spender_trust(chain, spender, hints=None):
         bad = _goplus_malicious(chain, spender)
         if bad:
             return "malicious", bad
+        breadth, established = _spender_breadth(chain, s)
+        if established:
+            return "established", f"widely used · {breadth}+ approvers (sampled)"
     return "unknown", None
 
 
@@ -1177,7 +1238,7 @@ def _score_items(items):
             exposure = 30
         else:
             exposure = 40 if it.get("unlimited") else 10
-        score = exposure + {"legit": -20, "malicious": 60, "unknown": 25}[trust]
+        score = exposure + {"legit": -20, "established": -10, "malicious": 60, "unknown": 25}[trust]
         if it.get("symbol_verified") is False:
             score += 40   # it wears a trusted ticker it has no claim to — treat as hostile
         score = max(0, min(100, score))

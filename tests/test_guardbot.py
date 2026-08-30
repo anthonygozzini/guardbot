@@ -130,6 +130,44 @@ class TestNonEvmEnrichment(unittest.TestCase):
         self.assertLess(item["risk_score"], 40)
 
 
+class TestSpenderTrust(unittest.TestCase):
+    """A legit protocol must not read 'unknown / high' just because it isn't in a 7-entry list.
+    Names come from a curated list; establishment comes from the chain; malicious always wins."""
+
+    def test_curated_spender_is_named_and_legit(self):
+        trust, name = approvals._spender_trust("bsc", "0xc92e8bdf79f0507f65a392b0ab4667716bfe0110")
+        self.assertEqual(trust, "legit")
+        self.assertIn("CoW", name)
+
+    def test_widely_used_spender_is_established(self):
+        reg = {"bsc": {"spenders": {"0xdead": 5000}, "meta": {"distinct_owners": 60000}}}
+        with mock.patch.object(approvals, "_SPENDER_REG", reg), \
+             mock.patch.object(approvals, "_goplus_malicious", lambda c, s: None):
+            trust, _ = approvals._spender_trust("bsc", "0xDEAD")
+        self.assertEqual(trust, "established")
+
+    def test_rare_spender_stays_unknown(self):
+        """A drainer with a few hundred victims must NOT be de-alarmed to 'established'."""
+        reg = {"bsc": {"spenders": {"0xdead": 50}, "meta": {"distinct_owners": 60000}}}
+        with mock.patch.object(approvals, "_SPENDER_REG", reg), \
+             mock.patch.object(approvals, "_goplus_malicious", lambda c, s: None):
+            trust, _ = approvals._spender_trust("bsc", "0xDEAD")
+        self.assertEqual(trust, "unknown")
+
+    def test_malicious_flag_overrides_establishment(self):
+        reg = {"bsc": {"spenders": {"0xdead": 5000}, "meta": {"distinct_owners": 60000}}}
+        with mock.patch.object(approvals, "_SPENDER_REG", reg), \
+             mock.patch.object(approvals, "_goplus_malicious", lambda c, s: "stealing_attack"):
+            trust, _ = approvals._spender_trust("bsc", "0xDEAD")
+        self.assertEqual(trust, "malicious")
+
+    def test_established_is_not_high(self):
+        it = {"chain": "bsc", "kind": "approval", "unlimited": True, "spender": "0xdead"}
+        with mock.patch.object(approvals, "_spender_trust", lambda c, s, h=None: ("established", "x")):
+            approvals._score_items([it])
+        self.assertLess(it["risk_score"], 60)   # unlimited(40) - established(10) = 30 = low, not high
+
+
 class TestChainDetection(unittest.TestCase):
     def test_detects_each_family(self):
         self.assertEqual(approvals.detect_chain("0x" + "ab" * 20), "evm")
@@ -352,6 +390,16 @@ class TestLiveApprovals(unittest.TestCase):
     def test_real_stablecoins_are_not_flagged_as_impostors(self):
         r = approvals.approvals(self.ADDR)
         self.assertEqual([i for i in r["items"] if i.get("symbol_verified") is False], [])
+
+    def test_known_protocols_are_named_not_unknown_high(self):
+        """The wallet's BSC spenders (deBridge, CoW, Rango, Bridgers) matched BscScan by address
+        but read 'unknown / high'. They must now be named and no longer high-risk."""
+        r = approvals.approvals(self.ADDR)
+        bsc = [i for i in r["items"] if i["chain"] == "bsc"]
+        self.assertTrue(bsc)
+        self.assertTrue(all(i.get("spender_name") or i.get("spender_trust") == "established"
+                            for i in bsc))
+        self.assertFalse([i for i in bsc if i["risk_level"] in ("high", "critical")])
 
     def test_solana_and_tron_rows_are_named(self):
         """Every chain gets real names, not a dash: Solana from the derived Metaplex account,

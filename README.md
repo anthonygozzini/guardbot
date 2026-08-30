@@ -169,6 +169,20 @@ is* — 8 such contracts sit in Ethereum's top-12k pairs alone. Every hit is the
 a **canary owner** that cannot have approved anything: a truthful ERC-20 answers 0, a fabricator
 doesn't, and its hits are dropped. Measured: 8 lies in → 0 out, genuine approvals untouched.
 
+**Who is the spender?** An approval's real risk is who you granted it to, and a 7-entry allowlist
+(Permit2, Uniswap, 1inch, 0x) left every other spender reading `unknown → high`, so legitimate
+protocols — deBridge, CoW/GPv2, Rango, Bridgers, LI.FI — all looked dangerous and nameless while a
+block explorer labels them. Two sources fix this without a paid label API. Human **names** can't be
+derived (they're off-chain), so the well-known cross-chain infrastructure is a small curated list
+(as revoke.cash does). **Establishment** *can* be derived: `tools/mine_spender_registry.py` counts,
+per chain, how many **distinct wallets** have approved each spender — thousands of independent
+approvers is a protocol the market trusts, and Sybiling that many costs real gas. A spender past
+that bar (≥1% of the sampled approvers, floor 300 — never a bare number) becomes `established` and
+stops reading high; the bar is high on purpose so a drainer with a few hundred victims is never
+de-alarmed, and a GoPlus-malicious flag overrides establishment every time. Result on the test
+wallet: the five BSC approvals now show `deBridge`, `Rango`, `Bridgers`, `CoW Protocol` at `low`,
+matching the explorer, instead of five nameless `high` rows.
+
 **Are keys still required? No.** Same address, same result:
 
 | mode | time | chains | approvals found |
