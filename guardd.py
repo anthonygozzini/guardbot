@@ -28,6 +28,7 @@ from urllib.parse import urlparse, parse_qs
 
 import guard
 import approvals as approvals_mod
+import tokencheck
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("GUARDBOT_PORT", "8403"))
@@ -253,6 +254,17 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/v1/check":
             q = parse_qs(u.query)
             self._check((q.get("chain") or [""])[0], (q.get("address") or [""])[0])
+        elif u.path == "/v1/tokencheck":
+            # first-hand verdict: we simulate buying and selling the token ourselves.
+            q = parse_qs(u.query)
+            chain = (q.get("chain") or ["bsc"])[0].strip()
+            token = (q.get("address") or q.get("token") or [""])[0].strip()
+            if not token:
+                return self._json(400, {"error": "address is required"})
+            try:
+                self._json(200, tokencheck.check_token(chain, token))
+            except Exception as e:
+                self._json(500, {"error": f"token check failed: {e}"})
         elif u.path == "/v1/approvals":
             # local-first & private: nothing is stored server-side or published. cached=1 returns
             # the local index's last result instantly (µs); otherwise a live scan (~seconds).

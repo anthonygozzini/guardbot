@@ -16,9 +16,40 @@ Every check carries its proof (honeypot, mint/freeze authority, taxes, liquidity
 concentration, LP, and more).
 
 GuardBot does both sides of safety:
-- **Prevent** — `check_token`: is a token a trap *before* you buy?
+- **Prevent** — is a token a trap *before* you buy? Answered **first-hand**: we simulate
+  buying and selling it ourselves (see below), rather than asking a vendor's API.
 - **Fix / view** — `approvals`: paste any address, see standing token approvals across
   **EVM + TRON + Solana** in one place (what single-chain revoke tools don't unify). Read-only.
+
+## Honeypot detection, done first-hand (`tokencheck.py`)
+
+Nobody's API is asked whether a token is a scam. `eth_call` accepts a **state override**, so a
+throwaway address can be handed some native coin and then **actually buy the token and sell it
+back** — atomically, in one call, against live liquidity, using Multicall3 as the temporary
+holder. Nothing is signed, nothing is spent. If the sell reverts, it's a honeypot; if less money
+comes back than the quote promised, that difference *is* the tax.
+
+Also read straight from the chain: liquidity depth, share of LP burned, whether ownership is
+renounced, whether it's an upgradeable proxy, and which privileged functions (mint, blacklist,
+pause, fee setters) genuinely exist in the deployed bytecode — matched by selectors computed
+with our own `keccak.py`, since Python ships SHA3-256, which is not keccak256.
+
+**A failure has to prove itself.** A reverted sell can mean "honeypot" or "the node hiccuped",
+and the two are indistinguishable in the response. So every failure is paired with a *control*
+token that is certainly sellable, run through the same node at the same moment: if the control
+fails too, the observation is thrown away. The whole analysis is also pinned to **one block** —
+without that, reserves shift between calls on a busy pool, the second buy returns slightly less
+than the first, the sell overdraws, and the tool brands **USDT** a honeypot. It did, twice,
+until this was fixed.
+
+Measured on BSC (real tokens people had approved): **5/5 honeypots blocked** across repeat runs,
+**0 false positives in 20 consecutive runs** on CAKE / USDT / BUSD / WBNB. Chains: BSC,
+Ethereum, Base, Arbitrum, Polygon.
+
+```bash
+python3 tokencheck.py bsc 0x<token>
+curl "http://127.0.0.1:8403/v1/tokencheck?chain=bsc&address=0x<token>"
+```
 
 ## Components
 - `guard.py` — token-safety engine: `assess(chain, address)` → normalized verdict. Stdlib only.
