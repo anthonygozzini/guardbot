@@ -286,6 +286,21 @@ class TestLiveApprovals(unittest.TestCase):
         chains = {i["chain"] for i in r["items"]}
         self.assertTrue({"bsc", "arbitrum", "polygon"} <= chains)
 
+    def test_bsc_probe_finds_every_approval_the_explorer_lists(self):
+        """BscScan lists 5 for this wallet. We found 2 until the probe learned to expand from a
+        hit — the mined universe only holds pairs seen TOGETHER, and three of these were a known
+        token with a known spender that had simply never been observed as a pair."""
+        r = approvals.approvals(self.ADDR)
+        bsc = [i for i in r["items"] if i["chain"] == "bsc"]
+        self.assertGreaterEqual(len(bsc), 5)
+
+    def test_probe_does_not_advertise_completeness(self):
+        """A probe that reports a coverage % reads like a clean bill. It must not."""
+        r = approvals.approvals(self.ADDR)
+        if r.get("probed_chains"):
+            self.assertNotIn("probe_coverage_pct", r)
+            self.assertIn("nothing found", r.get("probe_note", ""))
+
     def test_real_stablecoins_are_not_flagged_as_impostors(self):
         r = approvals.approvals(self.ADDR)
         self.assertEqual([i for i in r["items"] if i.get("symbol_verified") is False], [])

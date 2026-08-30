@@ -629,6 +629,63 @@ def _probe_allowances(rpc, owner, pairs):
     return {p for p in hits if canary.get(p, 0) == 0}
 
 
+EXPAND_ROUNDS = 3          # safety bound; in practice it converges in one or two
+EXPAND_MAX_CALLS = 400_000  # ceiling per round, so a pathological wallet cannot run away
+
+
+def _probe_erc20(rpc, owner, universe):
+    """Seed the probe from the mined pairs and the address's own holdings, then expand."""
+    seed = _probe_allowances(rpc, owner, universe)
+    tokens = sorted({t for t, _ in universe})
+    held = _held_tokens(rpc, owner, tokens)
+    if held:
+        spenders = sorted({s for _, s in universe})
+        seed |= _probe_allowances(rpc, owner, [(t, s) for t in held for s in spenders])
+    return _probe_expand(rpc, owner, universe, seed)
+
+
+def _probe_expand(rpc, owner, universe, seed):
+    """Grow the probe outward from what was already found.
+
+    The mined universe holds pairs that were OBSERVED together, but an approval can be any
+    (token, spender) combination — the third BSC approval on the test wallet used a token and
+    a spender that were both in the universe, just never seen paired. Spenders are the useful
+    axis: people reuse a handful of them, so once one is known, sweeping every token against it
+    is cheap and high-yield. Same in reverse for a token. Repeat until nothing new appears."""
+    tokens = sorted({t for t, _ in universe})
+    spenders = sorted({s for _, s in universe})
+    if not tokens or not spenders:
+        return set(seed)
+    hits = set(seed)
+    probed = {tuple(p) for p in universe}
+    frontier = set(seed)
+    for _ in range(EXPAND_ROUNDS):
+        if not frontier:
+            break
+        new_spenders = {s for _, s in frontier}
+        new_tokens = {t for t, _ in frontier}
+        cand = [(t, s) for s in new_spenders for t in tokens]
+        cand += [(t, s) for t in new_tokens for s in spenders]
+        cand = [p for p in dict.fromkeys(cand) if p not in probed][:EXPAND_MAX_CALLS]
+        if not cand:
+            break
+        probed.update(cand)
+        found = _probe_allowances(rpc, owner, cand)
+        frontier = found - hits
+        hits |= found
+    return hits
+
+
+def _held_tokens(rpc, owner, tokens):
+    """Tokens from the universe this address actually holds — a second seed for the expansion.
+    (Not sufficient on its own: an approval outlives the balance that motivated it.)"""
+    if not tokens:
+        return set()
+    call = lambda t, _u: (t, True, selector("balanceOf(address)") + _addr32(owner))
+    vals = _mc_generic(rpc, [(t, t) for t in tokens], call)
+    return {t for (t, _), v in vals.items() if v > 0}
+
+
 def _mc_generic(rpc, pairs, build_call):
     """Batch arbitrary per-pair calls through Multicall3 -> {(a, b): int result}."""
     batches = [pairs[i:i + PROBE_BATCH] for i in range(0, len(pairs), PROBE_BATCH)]
@@ -815,7 +872,7 @@ def _scan_chain(name, cfg, owner_topic, address):
         f_logs = {k_t: ex.submit(_approval_logs, name, cfg, owner_topic, address, from_block,
                                  True, k_t[1], k_t[2])
                   for k_t in sources}
-        f_probe = ex.submit(_probe_allowances, rpc, address, universe) if universe else None
+        f_probe = ex.submit(_probe_erc20, rpc, address, universe) if universe else None
         f_nft = ex.submit(_probe_nft_operators, rpc, address, nft_universe) if nft_universe else None
         f_p2 = ex.submit(_probe_permit2, rpc, address, p2_universe) if p2_universe else None
         results, latest, ok, partial = {}, 0, False, False
@@ -1113,10 +1170,17 @@ def approvals(address, chain=None, cached_only=False):
         out["probed_chains"] = probed
         out["probe_coverage_pct"] = cov
         out["probe_note"] = ("These chains have no readable log history on any free RPC, so they "
-                             "were PROBED instead of scanned: every candidate (token,spender) pair "
-                             "mined from the chain's own Approval events was checked live via "
-                             "Multicall3. Coverage is the share of observed approval activity the "
-                             "candidate set represents — high, but not a guarantee of completeness.")
+                             "were PROBED, not scanned: candidate (token,spender) pairs mined from "
+                             "the chain's own activity are checked live via Multicall3, then "
+                             "expanded outward from every hit — all tokens against a spender you "
+                             "use, all spenders against a token you approved. This found all 5 "
+                             "approvals BscScan lists for the test wallet. It can still miss a "
+                             "grant whose token AND spender are both outside the mined set, so "
+                             "treat an empty result here as 'nothing found', not 'nothing there'.")
+        # The percentage below describes the MARKET the candidate set covers, not how much of
+        # YOUR exposure was seen. Presenting it as a completeness figure is how a probe starts
+        # sounding like a clean bill, so it is named for what it actually measures.
+        out["probe_market_coverage_pct"] = out.pop("probe_coverage_pct", None)
     if partial:
         out["partial_chains"] = partial
         out["partial_note"] = ("Some block ranges on these chains could not be read from the free "
