@@ -34,6 +34,29 @@ renounced, whether it's an upgradeable proxy, and which privileged functions (mi
 pause, fee setters) genuinely exist in the deployed bytecode — matched by selectors computed
 with our own `keccak.py`, since Python ships SHA3-256, which is not keccak256.
 
+### The name on the tin proves nothing
+
+`symbol()` is whatever the contract says about itself, and it is free to lie. Among 1209 real,
+actually-approved BSC tokens, **four different contracts call themselves "USDT"** — one real,
+three impersonating it, and people had approved the fakes. Any tool that prints the self-declared
+symbol is laundering the disguise, which is exactly what the approvals viewer used to do.
+
+Identity is therefore never taken from the name, only from the **contract address**, and the tool
+answers a sharper question: *is this the contract the market means by that ticker?* What a fake
+cannot cheaply buy is depth — the real USDT trades against ~74,500 BNB, its impostors against
+zero. So `tools/mine_token_registry.py` mines, per chain, which contracts claim each symbol and
+how deep each one's pools run (summed across V2 **and** every Uniswap-V3 fee tier). The test is a
+**ratio against that symbol's own leader**, not any fixed size, so it works for obscure tickers too.
+
+Results: real USDT → `safe`, all three fakes → `block`. In the approvals viewer a contested token
+now reads **⚠ claims "USDT"** with the real address in the tooltip, never a bare `USDT`, and the
+approval is scored critical.
+
+Measuring V2 pools alone had flagged the genuine native USDC on Arbitrum as an impostor — most of
+its liquidity lives in V3. The fix was to measure the market properly, not to soften the check.
+Optimism is excluded rather than guessed at: its liquidity sits on Velodrome, which this
+measurement doesn't cover.
+
 **A failure has to prove itself.** A reverted sell can mean "honeypot" or "the node hiccuped",
 and the two are indistinguishable in the response. So every failure is paired with a *control*
 token that is certainly sellable, run through the same node at the same moment: if the control

@@ -28,6 +28,7 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
 .tag{display:inline-block;font-family:var(--mono);font-size:.66rem;padding:2px 8px;border-radius:100px;font-weight:600;margin-right:6px;vertical-align:middle}
 .tag-cached{background:#2a1f0f;color:var(--warn);animation:pulse 1.1s ease-in-out infinite}
 .tag-live{background:#0d2a20;color:var(--accent)}
+.fake{color:var(--risk);font-weight:600}
 @keyframes pulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.tag-cached{animation:none}}
 .badge{font-family:var(--mono);font-size:.68rem;padding:2px 8px;border-radius:100px;font-weight:600}
@@ -94,8 +95,18 @@ function render(d,mode){
       ? '<span title="'+esc(i.spender)+'">'+esc(i.spender_name)+'</span> <span class="chip">known</span>'
       : '<span class="mono trunc" title="'+esc(i.spender)+'">'+esc(short(i.spender))+'</span>'
         +(i.spender_trust==='unknown'?' <span class="chip">unknown</span>':'');
+    var tok;
+    if(i.symbol_verified===false){
+      tok='<span class="fake" title="This contract calls itself '+esc(i.token_symbol)
+        +', but the '+esc(i.token_symbol)+' the market trades is '+esc(i.impersonates)+'">⚠ claims &ldquo;'
+        +esc(i.token_symbol)+'&rdquo;</span>';
+    } else if(i.symbol_verified===true){
+      tok=esc(i.token_symbol)+' <span class="chip" title="this is the contract the market trades under that ticker">verified</span>';
+    } else {
+      tok=esc(i.token_symbol||'—');
+    }
     return '<tr><td><span class="chip">'+esc(i.chain)+'</span></td>'
-      +'<td>'+esc(i.token_symbol||'—')+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
+      +'<td>'+tok+'<div class="mono trunc" title="'+esc(i.token)+'">'+esc(short(i.token))+'</div></td>'
       +'<td>'+spend+'</td>'
       +'<td class="mono">'+esc(i.kind)+'</td>'
       +'<td>'+badge+'</td></tr>';

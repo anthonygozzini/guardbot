@@ -816,6 +816,42 @@ def _spender_trust(chain, spender):
     return "unknown", None
 
 
+_REGISTRY = None
+
+
+def _registry(chain):
+    global _REGISTRY
+    if _REGISTRY is None:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token_registry.json")
+        try:
+            with open(p) as f:
+                _REGISTRY = json.load(f)
+        except Exception:
+            _REGISTRY = {}
+    return _REGISTRY.get(chain) or {}
+
+
+def _flag_impersonation(items):
+    """A token's symbol is self-declared, so printing it unchallenged launders a disguise:
+    four BSC contracts call themselves USDT and only one is the one anyone means. Where a
+    symbol is contested, say which contract the market actually trades under that name."""
+    for it in items:
+        sym = (it.get("token_symbol") or "").strip()
+        if not sym:
+            continue
+        entries = _registry(it["chain"]).get(sym.upper())
+        if not entries:
+            continue
+        leader = entries[0][0].lower()
+        if leader == (it.get("token") or "").lower():
+            it["symbol_verified"] = True
+        else:
+            it["symbol_verified"] = False
+            it["impersonates"] = leader
+            it["symbol_claimants"] = len(entries)
+    return items
+
+
 def _score_items(items):
     """Attach a graded risk_level (0-100 + label) to each item: exposure + spender trust.
     The spender-trust lookups (GoPlus HTTP) run in parallel over the unique spenders."""
@@ -829,7 +865,10 @@ def _score_items(items):
         key = (it["chain"], (it.get("spender") or "").lower())
         trust, name = cache[key]
         exposure = 40 if it.get("unlimited") else (30 if it.get("kind") == "delegate" else 10)
-        score = max(0, min(100, exposure + {"legit": -20, "malicious": 60, "unknown": 25}[trust]))
+        score = exposure + {"legit": -20, "malicious": 60, "unknown": 25}[trust]
+        if it.get("symbol_verified") is False:
+            score += 40   # it wears a trusted ticker it has no claim to — treat as hostile
+        score = max(0, min(100, score))
         it["risk_score"] = score
         it["risk_level"] = _level(score)
         it["spender_trust"] = trust
@@ -859,6 +898,7 @@ def approvals(address, chain=None, cached_only=False):
         items, scanned = _solana(address)
     else:
         return {"error": "unrecognized address (expected EVM 0x…, TRON T…, or Solana base58)"}
+    _flag_impersonation(items)
     _score_items(items)
     levels = {lv: 0 for lv in LEVELS}
     for i in items:

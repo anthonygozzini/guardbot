@@ -335,6 +335,62 @@ def _bytecode_facts(url, token):
     return facts
 
 
+_REGISTRY = None
+
+
+def _registry(chain):
+    """symbol -> contracts claiming it, mined from the chain (tools/mine_token_registry.py)."""
+    global _REGISTRY
+    if _REGISTRY is None:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token_registry.json")
+        try:
+            with open(p) as f:
+                _REGISTRY = json.load(f)
+        except Exception:
+            _REGISTRY = {}
+    return _REGISTRY.get(chain) or {}
+
+
+IMPERSONATION_RATIO = 100   # leader's pool must dwarf this one by this multiple to call it out
+
+
+def _identity(chain, token, symbol, own_reserve):
+    """Is this contract the one the market means when it says that symbol?
+
+    A scam token can call itself USDT for free — four BSC contracts do. What it cannot fake
+    cheaply is depth: the real one trades against tens of thousands of BNB. So the test is a
+    RATIO against the leading claimant of the same symbol, not any absolute size: if another
+    contract wearing this name has a pool orders of magnitude bigger, this one is wearing a
+    costume. Normalizer is the symbol's own leader, so it works for obscure tickers too."""
+    if not symbol:
+        return None
+    entries = _registry(chain).get(symbol.upper())
+    if not entries or len(entries) < 2:
+        return None
+    top_addr, top_res = entries[0][0], int(entries[0][1])
+    if top_addr.lower() == token.lower():
+        return {"canonical": True, "symbol": symbol, "claimants": len(entries)}
+    mine = max(int(own_reserve or 0), 1)
+    if top_res >= IMPERSONATION_RATIO * mine:
+        return {"canonical": False, "symbol": symbol, "claimants": len(entries),
+                "leader": top_addr, "leader_reserve": str(top_res), "this_reserve": str(mine),
+                "ratio": int(top_res / mine)}
+    return {"canonical": False, "symbol": symbol, "claimants": len(entries), "ambiguous": True}
+
+
+def _symbol_of(url, token):
+    res, _ = _call(url, token, selector("symbol()"))
+    if not res or len(res) < 130:
+        return None
+    try:
+        off = int(res[2:66], 16) * 2 + 2
+        ln = int(res[off:off + 64], 16) * 2
+        s = bytes.fromhex(res[off + 64:off + 64 + ln]).decode("utf-8", "ignore").strip()
+        return s or None
+    except Exception:
+        return None
+
+
 def _ownership(url, token):
     out = {}
     for sig in ("owner()", "getOwner()"):
@@ -444,6 +500,25 @@ def check_token(chain, token, rpcs=None):
                 {"buy_tax_pct": bt, "sell_tax_pct": st})
 
     nat = liq.get("native_reserve")
+    sym = _symbol_of(url, token)
+    ident = _identity(chain, token, sym, nat)
+    if ident and not ident.get("canonical"):
+        if ident.get("ambiguous"):
+            add("identity", "warn",
+                f"{ident['claimants']} different contracts on this chain call themselves "
+                f"'{sym}' — the name tells you nothing; check the address", 15,
+                {"symbol": sym, "claimants": ident["claimants"]})
+        else:
+            add("identity", "fail",
+                f"this calls itself '{sym}', but the '{sym}' the market actually trades sits at "
+                f"{ident['leader'][:10]}… with {ident['ratio']}x the liquidity — this is an "
+                "impostor wearing a trusted name", 80,
+                {"symbol": sym, "impersonates": ident["leader"],
+                 "liquidity_ratio": ident["ratio"], "claimants": ident["claimants"]})
+    elif ident and ident.get("canonical"):
+        add("identity", "pass",
+            f"this IS the '{sym}' the market trades, despite {ident['claimants']} contracts "
+            "claiming the name", 0, {"symbol": sym, "claimants": ident["claimants"]})
     # How established the market is decides how much the governance facts should weigh. A pool
     # with thousands of coins in it is supplied by many independent LPs, so "the LP isn't burned"
     # is the normal state of a real market, not a rug signal — while on a 2-coin pool it is the
