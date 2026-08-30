@@ -961,15 +961,28 @@ def _tron(address):
     for row in (d.get("data") or []):
         unlimited = bool(row.get("unlimited"))
         token = row.get("contract_address")
-        sym = (cinfo.get(token) or {}).get("tokenInfo", {}).get("tokenAbbr") if isinstance(cinfo.get(token), dict) else None
-        items.append({
+        spender = row.get("to_address")
+        # the token's own details ride along with each row; the spender's public identity and
+        # risk flag sit in contractInfo. Both were being dropped, leaving every TRON row as
+        # "— / unknown" while the answer was already in the response.
+        tinfo = row.get("tokenInfo") or {}
+        sinfo = cinfo.get(spender) or {}
+        name = sinfo.get("tag1") or sinfo.get("name") or None
+        item = {
             "chain": "tron", "kind": "approval",
-            "token": token, "token_symbol": sym,
-            "spender": row.get("to_address"),
+            "token": token, "token_symbol": tinfo.get("tokenAbbr") or None,
+            "token_name": tinfo.get("tokenName") or None,
+            "spender": spender, "spender_name": name,
             "amount": str(row.get("amount", "")), "unlimited": unlimited,
             "risky": unlimited,   # on TRON an unlimited approval (often USDT) is the #1 risk
             "evidence": {"raw_amount": row.get("amount")},
-        })
+        }
+        if sinfo.get("risk"):
+            item["spender_flagged"] = True
+            item["evidence"]["spender_risk"] = sinfo.get("publicTagDesc") or "flagged by TronScan"
+        elif name:
+            item["spender_known"] = True
+        items.append(item)
     return items, ["tron"]
 
 
@@ -996,7 +1009,39 @@ def _solana(address):
                 "risky": True,   # an active delegate on a token account is worth reviewing
                 "evidence": {"token_account": acc.get("pubkey"), "state": info.get("state")},
             })
+    _name_solana_tokens(items)
     return items, ["solana"]
+
+
+def _name_solana_tokens(items):
+    """Fill in SPL token names. The mint holds no symbol — it lives in a Metaplex account whose
+    address is DERIVED from the mint, so this is computed and read from the chain, not looked up
+    in anyone's token list (see solmeta.py)."""
+    mints = sorted({i["token"] for i in items if i.get("token")})
+    if not mints:
+        return items
+    try:
+        import solmeta
+    except Exception:
+        return items
+
+    def fetch(m):
+        try:
+            return m, solmeta.token_meta(SOL_RPC, m)
+        except Exception:
+            return m, None
+
+    meta = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(mints))) as ex:
+        for m, info in ex.map(fetch, mints):
+            if info:
+                meta[m] = info
+    for it in items:
+        info = meta.get(it.get("token"))
+        if info:
+            it["token_symbol"] = info.get("symbol")
+            it["token_name"] = info.get("name")
+    return items
 
 
 # ---------------- leveled risk (exposure + spender trust) ----------------
@@ -1035,7 +1080,16 @@ def _goplus_malicious(chain_name, spender):
     return ", ".join(hit) if hit else None
 
 
-def _spender_trust(chain, spender):
+def _spender_trust(chain, spender, hints=None):
+    """What do we know about this spender? The allowlist and GoPlus only speak EVM, so a
+    non-EVM row used to come back 'unknown' by construction — not because nothing was known,
+    but because nobody asked. Chains that carry their own identity/risk data (TRON) pass it
+    in as hints, so every chain gets a real answer instead of a default one."""
+    hints = hints or {}
+    if hints.get("spender_flagged"):
+        return "malicious", hints.get("spender_name") or "flagged by the chain's explorer"
+    if hints.get("spender_known") and hints.get("spender_name"):
+        return "legit", hints["spender_name"]
     s = (spender or "").lower()
     if s in KNOWN_SPENDERS:
         return "legit", KNOWN_SPENDERS[s]
@@ -1094,11 +1148,22 @@ def _flag_impersonation(items):
 def _score_items(items):
     """Attach a graded risk_level (0-100 + label) to each item: exposure + spender trust.
     The spender-trust lookups (GoPlus HTTP) run in parallel over the unique spenders."""
+    # rows that already carry their own identity/risk data are resolved from it; only the rest
+    # need a lookup, and only those are batched out.
+    hinted = {}
+    for it in items:
+        if it.get("spender_known") or it.get("spender_flagged"):
+            hinted[(it["chain"], (it.get("spender") or "").lower())] = {
+                "spender_known": it.get("spender_known"),
+                "spender_flagged": it.get("spender_flagged"),
+                "spender_name": it.get("spender_name"),
+            }
     keys = {(it["chain"], (it.get("spender") or "").lower()) for it in items}
-    cache = {}
-    if keys:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(keys))) as ex:
-            for k, v in ex.map(lambda k: (k, _spender_trust(k[0], k[1])), list(keys)):
+    cache = {k: _spender_trust(k[0], k[1], hinted[k]) for k in keys if k in hinted}
+    todo = [k for k in keys if k not in cache]
+    if todo:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(todo))) as ex:
+            for k, v in ex.map(lambda k: (k, _spender_trust(k[0], k[1])), todo):
                 cache[k] = v
     for it in items:
         key = (it["chain"], (it.get("spender") or "").lower())

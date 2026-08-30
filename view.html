@@ -75,9 +75,10 @@ function render(d,mode){
   }
   if(d.probed_chains&&d.probed_chains.length){
     head+='<div class="err" style="border-color:var(--accent);background:#0d2a20;color:var(--accent)">◎ '
-      +'Probed, not log-scanned: '+esc(d.probed_chains.join(', '))+' — no free RPC serves log history '
-      +'there, so candidates are checked live and expanded from every hit. An empty result here means '
-      +'&ldquo;nothing found&rdquo;, not &ldquo;nothing there&rdquo;.</div>';
+      +'<b>'+esc(d.probed_chains.join(', '))+'</b>: this chain publishes no free history, so instead of '
+      +'reading your past we check your current permissions directly, one by one, widening the search '
+      +'around everything we find. It matched the block explorer on our test wallet — but if nothing '
+      +'shows up here, that means <b>we found nothing</b>, not that there is nothing.</div>';
   }
   if(d.partial_chains&&d.partial_chains.length){
     head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '

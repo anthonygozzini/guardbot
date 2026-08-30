@@ -82,6 +82,54 @@ class TestAbiCodec(unittest.TestCase):
         self.assertEqual(len(d) - 10, 7 * 64)        # 7 static words, no offsets
 
 
+class TestSolanaMetadata(unittest.TestCase):
+    """The mint holds no symbol; it is derived. These pin the derivation, not the network."""
+
+    def test_base58_round_trip(self):
+        import solmeta
+        for a in ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", solmeta.METADATA_PROGRAM):
+            self.assertEqual(solmeta.b58encode(solmeta.b58decode(a)), a)
+
+    def test_metadata_pda_is_deterministic_and_off_curve(self):
+        import solmeta
+        pda = solmeta.metadata_pda("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        self.assertEqual(pda, "5x38Kp4hvdomTCnCrAny4UtMUt5rQBdB6px2K1Ui45Wq")
+        self.assertFalse(solmeta._on_curve(solmeta.b58decode(pda)))
+
+    def test_a_real_account_is_on_curve(self):
+        import solmeta
+        self.assertTrue(solmeta._on_curve(
+            solmeta.b58decode("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")))
+
+    def test_metadata_layout_parser(self):
+        import solmeta
+        blob = bytes([4]) + b"\x00" * 64
+        for text in (b"USD Coin", b"USDC", b"http://x"):
+            blob += len(text).to_bytes(4, "little") + text
+        self.assertEqual(solmeta._parse_metadata(blob),
+                         {"name": "USD Coin", "symbol": "USDC", "uri": "http://x"})
+
+
+class TestNonEvmEnrichment(unittest.TestCase):
+    """Identity and trust must not be an EVM-only privilege: a TRON row used to read
+    '— / unknown' although the explorer response already carried both."""
+
+    def test_chain_supplied_hints_beat_the_evm_allowlist(self):
+        trust, name = approvals._spender_trust(
+            "tron", "TXYZ", {"spender_known": True, "spender_name": "JustLend"})
+        self.assertEqual((trust, name), ("legit", "JustLend"))
+
+    def test_chain_flagged_spender_is_malicious(self):
+        trust, _ = approvals._spender_trust("tron", "TXYZ", {"spender_flagged": True})
+        self.assertEqual(trust, "malicious")
+
+    def test_known_spender_lowers_the_score(self):
+        item = {"chain": "tron", "kind": "approval", "unlimited": True, "spender": "TXYZ",
+                "spender_known": True, "spender_name": "JustLend"}
+        approvals._score_items([item])
+        self.assertLess(item["risk_score"], 40)
+
+
 class TestChainDetection(unittest.TestCase):
     def test_detects_each_family(self):
         self.assertEqual(approvals.detect_chain("0x" + "ab" * 20), "evm")
@@ -304,6 +352,16 @@ class TestLiveApprovals(unittest.TestCase):
     def test_real_stablecoins_are_not_flagged_as_impostors(self):
         r = approvals.approvals(self.ADDR)
         self.assertEqual([i for i in r["items"] if i.get("symbol_verified") is False], [])
+
+    def test_solana_and_tron_rows_are_named(self):
+        """Every chain gets real names, not a dash: Solana from the derived Metaplex account,
+        TRON from the fields the explorer already returns."""
+        sol = approvals.approvals("47gTZwMbjSqVCffvqhdRAHBKo3ZKCr4nVR5vyEVv5P6L")
+        self.assertTrue(sol["items"])
+        self.assertTrue(all(i.get("token_symbol") for i in sol["items"]))
+        tron = approvals.approvals("TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb")
+        self.assertTrue(tron["items"])
+        self.assertTrue(all(i.get("token_symbol") for i in tron["items"]))
 
     def test_cached_read_is_instant(self):
         approvals.approvals(self.ADDR)
