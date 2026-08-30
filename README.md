@@ -68,10 +68,28 @@ zero API keys, zero third-party services** — including two unlimited USDT appr
 log-scanning path could never see. Results are labelled `probed` with their coverage %: high, but
 reported as a probe, never implied to be exhaustive.
 
-**Coverage & honesty.** Ethereum / Arbitrum / Polygon use the free **Etherscan V2** key
-(`GUARDBOT_ETHERSCAN_KEY`); Base / Optimism use the built-in free-RPC scanner; BSC uses the probe
-above. No chain is silently skipped: each is reported as `scanned`, `probed`, `partial`, or
-`degraded`. Keys are optional and live only in your local `.env` (gitignored, never shipped):
+The probe runs on **every** chain, not just BSC, alongside the log scan — the two sources are
+unioned, so history is exhaustive where it's readable and the probe is the floor everywhere else.
+Universes are mined per chain (`ethereum` 12k pairs / 92.2%, `base` 4k / 97.6%, `bsc` 4k / 96.6%,
+`polygon`, `optimism`, `arbitrum` 100% of their sampled activity).
+
+**Don't trust the token contracts.** The probe queries contracts nobody vetted, and scam tokens
+exist whose `allowance()` returns "unlimited" for the scammer's spender *no matter who the owner
+is* — 8 such contracts sit in Ethereum's top-12k pairs alone. Every hit is therefore re-asked for
+a **canary owner** that cannot have approved anything: a truthful ERC-20 answers 0, a fabricator
+doesn't, and its hits are dropped. Measured: 8 lies in → 0 out, genuine approvals untouched.
+
+**Are keys still required? No.** Same address, same result:
+
+| mode | time | chains | approvals found |
+|---|---|---|---|
+| with Etherscan + Alchemy keys | 2.4s | 6/6, none degraded | 4 |
+| **no keys at all** (public RPCs only) | 10.0s | 6/6, none degraded | **4** |
+| cached re-open | 0.1ms | — | 4 |
+
+Keys buy **speed and exhaustive history**, not coverage. Without them nothing is skipped: each
+chain is reported as `scanned`, `probed`, `partial`, or `degraded`. Keys are optional and live
+only in your local `.env` (gitignored, never shipped):
 ```bash
 echo 'GUARDBOT_ETHERSCAN_KEY=<your key>' >> .env   # free, covers eth/arbitrum/polygon
 echo 'GUARDBOT_ALCHEMY_KEY=<your key>'   >> .env   # used for eth_call (allowance/symbol)

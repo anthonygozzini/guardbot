@@ -26,12 +26,26 @@ OUT = os.path.join(BASE, "probe_universe.json")
 APPROVAL_TOPIC = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
 UA = "Mozilla/5.0 (guardbot/0.1; universe miner; read-only)"
 
-# RPCs that serve getLogs on SMALL windows — enough to sample, not to scan history.
+# RPCs that serve getLogs on SMALL windows — enough to SAMPLE, not to scan history.
+# Sampling is a one-off maintenance job, not something a user's look-up depends on.
 SAMPLERS = {
-    "bsc": ["https://56.rpc.thirdweb.com"],
+    "bsc": ["https://56.rpc.thirdweb.com", "https://bsc.rpc.blxrbdn.com"],
+    "ethereum": ["https://1.rpc.thirdweb.com", "https://eth.llamarpc.com",
+                 "https://ethereum-rpc.publicnode.com"],
+    "base": ["https://mainnet.base.org", "https://base.drpc.org", "https://8453.rpc.thirdweb.com"],
+    "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://42161.rpc.thirdweb.com"],
+    "polygon": ["https://rpc-mainnet.matic.quiknode.pro"],
+    "optimism": ["https://mainnet.optimism.io", "https://10.rpc.thirdweb.com"],
 }
+# Busy chains return enormous windows (Polygon: 74k Approval events per 600 blocks), so the
+# window is trimmed per chain to keep each sample response manageable.
+WINDOW_BY_CHAIN = {"polygon": 60}
+# Chains differ wildly in block time (Ethereum 12s vs Arbitrum 0.25s), so the stride is set
+# per chain to spread the sample over a comparable span of TIME, not of blocks.
+STRIDE_BY_CHAIN = {"ethereum": 3_000, "bsc": 40_000, "base": 60_000,
+                   "arbitrum": 400_000, "polygon": 40_000, "optimism": 60_000}
 WINDOW = 600        # blocks per sample window (small enough for a throttled RPC)
-STRIDE = 40_000     # gap between windows, to spread the sample over recent history
+STRIDE = 40_000     # default gap between windows
 WINDOWS = 24
 
 
@@ -47,16 +61,30 @@ def mine(chain, top_n=4000):
     urls = SAMPLERS.get(chain)
     if not urls:
         raise SystemExit(f"no sampler RPC configured for {chain}")
-    url = urls[0]
-    latest = int(_rpc(url, "eth_blockNumber", [])["result"], 16)
-    windows = [(latest - i * STRIDE - WINDOW, latest - i * STRIDE) for i in range(WINDOWS)]
+    latest, url = 0, None
+    for u in urls:
+        try:
+            latest = int(_rpc(u, "eth_blockNumber", [], 15)["result"], 16)
+            url = u
+            break
+        except Exception:
+            continue
+    if not url:
+        raise SystemExit(f"{chain}: no sampler RPC reachable")
+    stride = STRIDE_BY_CHAIN.get(chain, STRIDE)
+    win = WINDOW_BY_CHAIN.get(chain, WINDOW)
+    windows = [(latest - i * stride - win, latest - i * stride) for i in range(WINDOWS)]
 
     def fetch(w):
-        try:
-            return _rpc(url, "eth_getLogs", [{"fromBlock": hex(w[0]), "toBlock": hex(w[1]),
-                                              "topics": [APPROVAL_TOPIC]}]).get("result") or []
-        except Exception:
-            return []
+        for u in urls:                      # samplers disagree on limits — try each
+            try:
+                r = _rpc(u, "eth_getLogs", [{"fromBlock": hex(w[0]), "toBlock": hex(w[1]),
+                                             "topics": [APPROVAL_TOPIC]}])
+                if isinstance(r.get("result"), list):
+                    return r["result"]
+            except Exception:
+                continue
+        return []
 
     pairs, total = collections.Counter(), 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -83,7 +111,7 @@ def mine(chain, top_n=4000):
         "pairs": [[t, s] for (t, s), _ in keep],
         "meta": {"sampled_events": total, "unique_pairs": len(pairs),
                  "kept": len(keep), "coverage_pct": round(covered, 1),
-                 "windows": WINDOWS, "window_blocks": WINDOW, "stride": STRIDE},
+                 "windows": WINDOWS, "window_blocks": win, "stride": stride},
     }
     with open(OUT, "w") as f:
         json.dump(data, f)

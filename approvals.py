@@ -53,22 +53,46 @@ ETHERSCAN_KEY = os.environ.get("GUARDBOT_ETHERSCAN_KEY", "")
 ALCHEMY_KEY = os.environ.get("GUARDBOT_ALCHEMY_KEY", "")
 ALCHEMY_NET = {"ethereum": "eth-mainnet", "base": "base-mainnet", "arbitrum": "arb-mainnet",
                "optimism": "opt-mainnet", "polygon": "polygon-mainnet", "bsc": "bnb-mainnet"}
-# per chain: id, fallback public RPC for eth_call, and whether that RPC allows full-range getLogs.
+# per chain: id + public RPCs for eth_call (several, because free endpoints die without notice —
+# polygon-rpc.com started returning 401 and a single hardcoded RPC turned that into a false clean).
 EVM_CFG = {
-    "ethereum": {"id": "1", "rpc": "https://eth.llamarpc.com", "logs_ok": False},
-    "bsc": {"id": "56", "rpc": "https://bsc-dataseed.binance.org", "logs_ok": False},
-    "base": {"id": "8453", "rpc": "https://mainnet.base.org", "logs_ok": False},
-    "arbitrum": {"id": "42161", "rpc": "https://arb1.arbitrum.io/rpc", "logs_ok": True},
-    "polygon": {"id": "137", "rpc": "https://polygon-rpc.com", "logs_ok": False},
-    "optimism": {"id": "10", "rpc": "https://mainnet.optimism.io", "logs_ok": False},
+    "ethereum": {"id": "1", "rpcs": ["https://eth.llamarpc.com",
+                                     "https://ethereum-rpc.publicnode.com",
+                                     "https://1.rpc.thirdweb.com"]},
+    "bsc": {"id": "56", "rpcs": ["https://bsc-dataseed.binance.org",
+                                 "https://bsc-rpc.publicnode.com",
+                                 "https://56.rpc.thirdweb.com"]},
+    "base": {"id": "8453", "rpcs": ["https://mainnet.base.org", "https://base.drpc.org"]},
+    "arbitrum": {"id": "42161", "rpcs": ["https://arb1.arbitrum.io/rpc",
+                                         "https://arbitrum-one-rpc.publicnode.com"]},
+    "polygon": {"id": "137", "rpcs": ["https://polygon-bor-rpc.publicnode.com",
+                                      "https://polygon.drpc.org", "https://1rpc.io/matic"]},
+    "optimism": {"id": "10", "rpcs": ["https://mainnet.optimism.io",
+                                      "https://optimism-rpc.publicnode.com"]},
 }
+_RPC_PICK = {}
+_pick_lock = threading.Lock()
 
 
 def _chain_rpc(name, cfg):
-    """Best RPC for eth_call (allowance/symbol): Alchemy if keyed, else the public fallback."""
+    """Best RPC for eth_call (allowance/symbol): Alchemy if keyed, else the first public
+    endpoint that actually answers (probed once per process, then remembered)."""
     if ALCHEMY_KEY and name in ALCHEMY_NET:
         return f"https://{ALCHEMY_NET[name]}.g.alchemy.com/v2/{ALCHEMY_KEY}"
-    return cfg["rpc"]
+    with _pick_lock:
+        hit = _RPC_PICK.get(name)
+    if hit:
+        return hit
+    urls = cfg.get("rpcs") or []
+    for u in urls:
+        try:
+            if _rpc(u, "eth_blockNumber", []):
+                with _pick_lock:
+                    _RPC_PICK[name] = u
+                return u
+        except Exception:
+            continue
+    return urls[0] if urls else ""
 SOL_RPC = "https://api.mainnet-beta.solana.com"
 SPL_PROGRAMS = ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   # SPL Token
                 "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"]   # Token-2022
@@ -383,7 +407,7 @@ def _block_number(rpc):
         return 0
 
 
-def _approval_logs(name, cfg, owner_topic, owner, from_block=0):
+def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=False):
     """Return (logs, latest_block, ok, partial) for Approval events in [from_block, latest].
     from_block=0 = full history; >0 = incremental (only new blocks, driven by the local index).
     Fast pre-check skips fresh scans of chains the address never used (nonce==0). Source order:
@@ -393,7 +417,12 @@ def _approval_logs(name, cfg, owner_topic, owner, from_block=0):
     ranges could not be read (reported, never silently treated as clean)."""
     rpc = _chain_rpc(name, cfg)
     latest = _block_number(rpc)
-    if from_block == 0:
+    if latest <= 0:
+        # couldn't even read the head: that is a FAILURE, not "no blocks to scan". Returning
+        # ok=True here would report an unreadable chain as clean — the exact false-negative
+        # that makes a safety tool dangerous. Hand over to the probe instead.
+        return [], 0, False, False
+    if from_block == 0 and not nonce_checked:
         try:
             if _nonce(rpc, owner) == 0:
                 return [], latest, True, False   # never acted here → no approvals possible
@@ -522,11 +551,21 @@ def _dec_aggregate3(hexstr):
     return out
 
 
-def _probe_allowances(rpc, owner, pairs):
-    """Batch allowance(owner, spender) over candidate pairs via Multicall3.
-    Returns the set of (token, spender) whose allowance is currently > 0."""
+ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+# The probe queries token contracts we did not choose, so their answers cannot be trusted.
+# Scam tokens exist whose allowance() returns "unlimited" for a specific spender (the
+# scammer's drainer) no matter WHO the owner is, so that transferFrom works against anyone.
+# Measured: 8 such contracts among Ethereum's top-12k pairs alone.
+# Canary test: re-ask the same (token, spender) for an owner that cannot possibly have
+# approved anything — a fixed address with no history. A truthful ERC-20 answers 0; a
+# nonzero answer proves the contract fabricates allowances, and its hits are dropped.
+CANARY_OWNER = "0x00000000000000000000000000000000deadbe01"
+
+
+def _mc_allowances(rpc, owner, pairs):
+    """Batch allowance(owner, spender) via Multicall3 → {(token, spender): value}."""
     batches = [pairs[i:i + PROBE_BATCH] for i in range(0, len(pairs), PROBE_BATCH)]
-    found, lock = set(), threading.Lock()
+    out, lock = {}, threading.Lock()
 
     def run(batch):
         calls = [(t, True, "0xdd62ed3e" + _addr32(owner) + _addr32(s)) for t, s in batch]
@@ -537,21 +576,31 @@ def _probe_allowances(rpc, owner, pairs):
             res = _dec_aggregate3(r)
         except Exception:
             return
-        hits = set()
+        got = {}
         for (t, s), (ok, val) in zip(batch, res):
             if ok and val and val != "0x":
                 try:
-                    if int(val, 16) > 0:
-                        hits.add((t.lower(), s.lower()))
+                    got[(t.lower(), s.lower())] = int(val, 16)
                 except ValueError:
                     pass
-        if hits:
+        if got:
             with lock:
-                found.update(hits)
+                out.update(got)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=PROBE_WORKERS) as ex:
         list(ex.map(run, batches))
-    return found
+    return out
+
+
+def _probe_allowances(rpc, owner, pairs):
+    """Probe candidate pairs and return the (token, spender) set with a REAL standing allowance.
+    Hits are validated against lying token contracts via the CANARY check above."""
+    vals = _mc_allowances(rpc, owner, pairs)
+    hits = {p for p, v in vals.items() if v > 0 and p[1] != ZERO_ADDR}
+    if not hits:
+        return set()
+    canary = _mc_allowances(rpc, CANARY_OWNER, sorted(hits))
+    return {p for p in hits if canary.get(p, 0) == 0}
 
 
 def _resolve_pairs(rpc, name, owner, pairs):
@@ -594,32 +643,60 @@ def _resolve_pairs(rpc, name, owner, pairs):
 
 
 def _scan_chain(name, cfg, owner_topic, address):
-    """One chain's whole pipeline (index read → incremental scan → live allowance).
-    Returns (name, status, items) with status in {'scanned','partial','cached','degraded'}."""
+    """One chain's whole pipeline. Two independent sources run CONCURRENTLY and are unioned:
+      - log history (Etherscan / our adaptive RPC scanner) — exhaustive where it is available;
+      - Multicall3 present-probing over the chain-mined candidate universe — needs no logs and
+        no API key, so it is the keyless floor on every chain and catches what history misses.
+    Returns (name, status, items); status names the HISTORY source
+    ('scanned' | 'partial' | 'probed' | 'cached' | 'degraded')."""
+    rpc = _chain_rpc(name, cfg)
     pairs, last = _cached(name, address)
     from_block = (last + 1) if last is not None else 0
-    logs, latest, ok, partial = _approval_logs(name, cfg, owner_topic, address, from_block)
-    if not ok:
-        # no readable log history → probe the present via Multicall3 over mined candidates.
-        universe, _meta = _probe_universe(name)
-        if universe:
-            pairs |= _probe_allowances(_chain_rpc(name, cfg), address, universe)
-            status = "probed"
-        elif pairs:
-            status = "cached"    # live scan down; show last-known pairs
-        else:
-            return name, "degraded", []
-    else:
+    if not pairs:
+        # never acted on this chain → no approval can exist here; skip both sources. Checked on
+        # every run with no known pairs (not just the first), otherwise a re-scan would probe
+        # chains the address never touched and surface junk from hostile token contracts.
+        try:
+            if _nonce(rpc, address) == 0:
+                _store(name, address, set(), _block_number(rpc))
+                return name, "scanned", []
+        except Exception:
+            pass
+    universe, _meta = _probe_universe(name)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        f_logs = ex.submit(_approval_logs, name, cfg, owner_topic, address, from_block, True)
+        f_probe = ex.submit(_probe_allowances, rpc, address, universe) if universe else None
+        try:
+            logs, latest, ok, partial = f_logs.result()
+        except Exception:
+            logs, latest, ok, partial = [], 0, False, False
+        probe_hits = set()
+        if f_probe is not None:
+            try:
+                probe_hits = f_probe.result()
+            except Exception:
+                pass
+
+    if ok:
         for lg in logs:
             topics = lg.get("topics") or []
             if len(topics) < 3:
                 continue          # only indexed Approval(owner,spender); skip Permit-style
             pairs.add((lg["address"].lower(), "0x" + topics[2][-40:]))
-        # only advance the index watermark on a COMPLETE scan; a partial one must re-scan.
-        if not partial:
-            _store(name, address, pairs, latest)
         status = "partial" if partial else "scanned"
-    items = _resolve_pairs(_chain_rpc(name, cfg), name, address, pairs)
+    elif probe_hits or universe:
+        status = "probed"         # no readable history; the probe is the source
+    elif pairs:
+        status = "cached"         # nothing live worked; show last-known pairs
+    else:
+        return name, "degraded", []
+
+    pairs |= probe_hits
+    # only advance the index watermark on a COMPLETE log scan; anything else must re-read.
+    if ok and not partial:
+        _store(name, address, pairs, latest)
+    items = _resolve_pairs(rpc, name, address, pairs)
     return name, status, items
 
 
