@@ -153,7 +153,7 @@ function getWCProvider(){
   wcInit=import('https://esm.sh/@walletconnect/ethereum-provider@2.21.0').then(function(mod){
     var EP=mod.EthereumProvider||mod.default;
     return EP.init({
-      projectId:WC_PID, chains:[1], optionalChains:[56,137,8453,42161,10], showQrModal:false,
+      projectId:WC_PID, chains:[], optionalChains:[1,56,137,8453,42161,10], showQrModal:false,
       metadata:{name:'GuardBot',description:'Token approvals & revoke',url:location.origin,icons:[]}
     });
   }).then(function(prov){
@@ -192,12 +192,20 @@ function connectWalletConnect(){
     var live=prov.session||(prov.accounts&&prov.accounts.length);
     var pre=live?Promise.resolve(prov.disconnect()).catch(function(){}):Promise.resolve();
     return pre.then(function(){
-      return prov.enable().then(function(accts){
+      // no chain is required (chains:[]), so the wallet approves whatever it has and enable()
+      // resolves; a timeout turns any relay stall into a message instead of an endless "Scanning…"
+      var timed=new Promise(function(_,rej){ setTimeout(function(){rej(new Error('__timeout__'));},45000); });
+      return Promise.race([prov.enable(), timed]).then(function(accts){
         useAccounts((accts&&accts.length)?accts:(prov.accounts||[]),'via WalletConnect');
       });
     });
   }).catch(function(e){
-    wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
+    if(e&&e.message==='__timeout__'){
+      wconn.innerHTML='<div class="wc-warn">The wallet approved but the session didn’t finish in time. '
+        +'Tap <b>Connect</b> again, or reload the page and retry.</div>';
+    } else {
+      wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
+    }
   });
 }
 connect.addEventListener('click',function(){
