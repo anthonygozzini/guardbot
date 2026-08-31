@@ -66,6 +66,8 @@ ETHERSCAN_KEY = os.environ.get("GUARDBOT_ETHERSCAN_KEY", "")
 # request falls through to our own scanner. Gating on the key alone quietly launched four
 # full-history sweeps on chains it never covered.
 ETHERSCAN_FREE_CHAINS = {"ethereum", "arbitrum", "polygon"}
+# free, keyless, Etherscan-compatible log APIs for chains the Etherscan free tier excludes
+BLOCKSCOUT = {"base": "https://base.blockscout.com"}
 
 # Etherscan free allows 5 req/s for the WHOLE process, but 4 event families × N chains fire their
 # getLogs together: the burst tripped the limiter, every retry failed too, and the chain fell back
@@ -83,6 +85,21 @@ def _escan_gate():
             time.sleep(wait)
             now = time.time()
         _ESCAN_NEXT[0] = now + 0.26
+
+
+# same idea for Blockscout, spaced wider (its public API is touchier than Etherscan's 5/s)
+_BS_LOCK = threading.Lock()
+_BS_NEXT = [0.0]
+
+
+def _bs_gate():
+    with _BS_LOCK:
+        now = time.time()
+        wait = _BS_NEXT[0] - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.time()
+        _BS_NEXT[0] = now + 1.1
 # No keyed RPC provider. Everything runs on free public RPCs — proven to give the same result as
 # a keyed setup (see README), so there is nothing to rate-limit, pay for, or leak. eth_call
 # (allowance/symbol/name/nonce/Multicall3) goes to the public endpoints below.
@@ -487,6 +504,57 @@ def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=Fa
                 time.sleep(0.9)
                 continue
             break   # chain not on the free tier → fall through to our scanner
+    # Blockscout — Etherscan-compatible getLogs, free and keyless, on chains the Etherscan free
+    # tier locks out (Base said "upgrade your plan" while a real USDC approval sat unread there;
+    # the windowed RPC scanner ran >10 min on the same wallet and the mined probe universe didn't
+    # contain that (token, spender) pair — this is raw chain history, not a verdict service).
+    # Owner-filtered queries return few rows; a full page (1000) may be truncated, so page forward.
+    bs = BLOCKSCOUT.get(name)
+    if bs:
+        logs, lo, ok_bs = [], from_block, True
+        for _page in range(20):
+            url = (f"{bs}/api?module=logs&action=getLogs&fromBlock={lo}&toBlock=latest"
+                   f"&topic0={topic0}&topic0_1_opr=and&topic1={owner_topic}"
+                   + (f"&address={address}" if address else ""))
+            # the four event families query together, and Blockscout rate-limits the burst: a
+            # transient 429 must RETRY behind the shared gate, never hand the whole chain to the
+            # windowed scanner (that fallback is the >10-minute path this source exists to replace)
+            res = None
+            for _try in range(5):
+                _bs_gate()
+                try:
+                    d = _get(url)
+                except Exception:
+                    time.sleep(1 << _try)   # 429s answer in ~0.2s; exponential backoff outlives
+                    continue                # the per-minute quota window instead of burning tries
+                r = d.get("result")
+                if isinstance(r, list):
+                    res = r
+                    break
+                msg = str(d.get("message", "")).lower()
+                if msg.startswith("no records") or msg.startswith("no logs"):
+                    res = []
+                    break
+                time.sleep(1 << _try)
+            if res is None:
+                ok_bs = False
+                break
+            logs.extend(res)
+            if len(res) < 1000:
+                break
+            try:
+                lo = int(res[-1]["blockNumber"], 16) + 1
+            except Exception:
+                ok_bs = False
+                break
+        else:
+            ok_bs = False   # 20 full pages → can't prove completeness
+        if ok_bs:
+            return logs, latest, True, False
+        # On a Blockscout chain the windowed pool scanner is NOT a fallback: Base means thousands
+        # of 10k-block windows (>10 min measured on a real wallet) inside a viewer that waits 150s.
+        # An honest fast "history unreadable" hands the chain to the probe + cached pairs instead.
+        return [], latest, False, False
     # our own adaptive scanner over a free public-RPC pool (Base, Optimism, …).
     pool = RPC_POOL.get(name)
     if pool:
