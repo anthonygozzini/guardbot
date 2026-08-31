@@ -164,6 +164,26 @@ function getWCProvider(){
   });
   return wcInit;
 }
+// Solana / TRON wallets inject their own providers (window.solana / window.tronWeb), present in
+// each wallet's in-app browser. Connecting just reads the address; the revoke is signed by that
+// same provider. No SDK is loaded to connect — only the Solana revoke lazy-loads web3.js.
+function connectSolana(){
+  var sol=window.solana||(window.phantom&&window.phantom.solana);
+  connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
+  Promise.resolve(sol.connect()).then(function(res){
+    connect.disabled=false;
+    var pk=(res&&res.publicKey&&res.publicKey.toString&&res.publicKey.toString())
+         ||(sol.publicKey&&sol.publicKey.toString&&sol.publicKey.toString());
+    if(pk) setConnected(pk,'via Solana wallet');
+    else wconn.innerHTML='<div class="wc-warn">Solana wallet returned no address.</div>';
+  }).catch(function(e){ connect.disabled=false;
+    wconn.innerHTML='<div class="wc-warn">Not connected: '+esc((e&&e.message)||'cancelled')+'</div>'; });
+}
+function connectTron(){
+  var a=window.tronWeb&&window.tronWeb.defaultAddress&&window.tronWeb.defaultAddress.base58;
+  if(a) setConnected(a,'via TRON wallet');
+  else wconn.innerHTML='<div class="wc-warn">Unlock your TRON wallet and tap Connect again.</div>';
+}
 function connectWalletConnect(){
   wconn.innerHTML='<div class="status">Starting WalletConnect…</div>';
   getWCProvider().then(function(prov){
@@ -193,6 +213,8 @@ connect.addEventListener('click',function(){
     });
     return;
   }
+  if(window.solana||(window.phantom&&window.phantom.solana)){ connectSolana(); return; }
+  if(window.tronWeb&&window.tronWeb.defaultAddress&&window.tronWeb.defaultAddress.base58){ connectTron(); return; }
   if(WC_PID){ connectWalletConnect(); return; }
   wconn.innerHTML='<div class="wc-warn">No wallet in this browser. Open this page inside your '
     +'wallet’s built-in browser (Trust Wallet, MetaMask, Rabby), or install a wallet extension. '
@@ -204,10 +226,69 @@ connect.addEventListener('click',function(){
 // server-side (only three revoking calls exist there), shown in full BEFORE anything is signed,
 // signed one at a time by your own wallet, and always exportable so a hardware or offline signer
 // can do it instead. This page never sees a key and never batches signatures.
+var _sigbox;
+function sigbox(head, lines, btnLabel){
+  _sigbox.innerHTML='<div class="signbox"><div class="signhead">'+esc(head)+'</div>'+lines
+    +'<div class="sigacts"><button id="dosign">'+esc(btnLabel)+'</button></div>'
+    +'<div id="signmsg" class="hint"></div></div>';
+  return document.getElementById('signmsg');
+}
+// TRON: TronLink / Trust inject window.tronWeb, which builds AND signs approve(spender,0) itself.
+function revokeTron(b){
+  var token=b.dataset.token, spender=b.dataset.spender;
+  var msg=sigbox('This is exactly what you would sign',
+    '<div class="mono sigline"><b>call</b> approve('+esc(spender)+', 0)</div>'
+    +'<div class="mono sigline"><b>token</b> '+esc(token)+'</div>'
+    +'<div class="sigline">Sets this spender’s TRC-20 allowance on TRON to zero.</div>',
+    'Sign in TronLink / Trust');
+  document.getElementById('dosign').onclick=function(){
+    var tw=window.tronWeb;
+    if(!tw||!tw.defaultAddress||!tw.defaultAddress.base58){
+      msg.innerHTML='No TRON wallet here. Open this page in TronLink or Trust Wallet’s browser.';return;}
+    msg.textContent='Check your wallet…';
+    tw.contract().at(token).then(function(c){ return c.approve(spender,0).send(); })
+      .then(function(h){ msg.innerHTML='Sent: <span class="mono">'+esc(h)+'</span>. Re-scan once it confirms.'; })
+      .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+  };
+}
+// Solana: a "delegate" is revoked with the SPL Token `revoke` instruction on the token ACCOUNT,
+// built with @solana/spl-token and signed by window.solana (Phantom / Trust).
+function revokeSolana(b){
+  var tokenAccount=b.dataset.account, owner=addr.value.trim();
+  if(!tokenAccount){ _sigbox.innerHTML='<div class="err">missing token account for this delegate</div>'; return; }
+  var msg=sigbox('This is exactly what you would sign',
+    '<div class="mono sigline"><b>call</b> revoke(token account)</div>'
+    +'<div class="mono sigline"><b>account</b> '+esc(tokenAccount)+'</div>'
+    +'<div class="sigline">Removes the delegate from this SPL token account.</div>',
+    'Sign in Phantom / Trust');
+  document.getElementById('dosign').onclick=function(){
+    var sol=window.solana||(window.phantom&&window.phantom.solana);
+    if(!sol){ msg.innerHTML='No Solana wallet here. Open this page in Phantom or Trust Wallet’s browser.'; return; }
+    msg.textContent='Loading…';
+    Promise.all([import('https://esm.sh/@solana/web3.js@1.95.8'),
+                 import('https://esm.sh/@solana/spl-token@0.4.9')]).then(function(m){
+      var web3=m[0], spl=m[1];
+      var conn=new web3.Connection('https://api.mainnet-beta.solana.com','confirmed');
+      return sol.connect().then(function(){
+        var ownerPk=new web3.PublicKey(owner), taPk=new web3.PublicKey(tokenAccount);
+        var tx=new web3.Transaction().add(spl.createRevokeInstruction(taPk, ownerPk));
+        tx.feePayer=ownerPk;
+        return conn.getLatestBlockhash().then(function(bh){
+          tx.recentBlockhash=bh.blockhash;
+          return sol.signAndSendTransaction(tx);
+        });
+      });
+    }).then(function(res){ var s=(res&&res.signature)||res;
+      msg.innerHTML='Sent: <span class="mono">'+esc(s)+'</span>. Re-scan once it confirms.'; })
+      .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+  };
+}
 function bindRevoke(){
-  var panel=document.getElementById('sign');
+  var panel=document.getElementById('sign'); _sigbox=panel;
   Array.prototype.forEach.call(document.querySelectorAll('button.rev'),function(b){
     b.addEventListener('click',function(){
+      if(b.dataset.chain==='tron'){ revokeTron(b); return; }
+      if(b.dataset.chain==='solana'){ revokeSolana(b); return; }
       var q='chain='+encodeURIComponent(b.dataset.chain)+'&kind='+encodeURIComponent(b.dataset.kind)
            +'&token='+encodeURIComponent(b.dataset.token)+'&spender='+encodeURIComponent(b.dataset.spender)
            +'&owner='+encodeURIComponent(addr.value.trim());
@@ -327,9 +408,10 @@ function render(d,mode){
           ?'<div class="hint" style="margin:0">until '+esc(new Date(i.evidence.expires_unix*1000).toISOString().slice(0,10))+'</div>':'')
         +'</td>'
       +'<td>'+badge+'</td>'
-      +'<td>'+(i.chain && CHAIN_IDS[i.chain] && i.kind!=='delegate'
+      +'<td>'+((CHAIN_IDS[i.chain]&&i.kind!=='delegate')||i.chain==='tron'||i.chain==='solana'
         ? '<button class="rev" data-chain="'+esc(i.chain)+'" data-kind="'+esc(i.kind)
-          +'" data-token="'+esc(i.token)+'" data-spender="'+esc(i.spender)+'">Revoke</button>'
+          +'" data-token="'+esc(i.token)+'" data-spender="'+esc(i.spender)
+          +'" data-account="'+esc((i.evidence&&i.evidence.token_account)||'')+'">Revoke</button>'
         : '<span class="hint" style="margin:0">—</span>')+'</td></tr>';
   }).join('');
   out.innerHTML=head+'<table><thead><tr><th>Chain</th><th>Token</th><th>Spender</th><th>Type</th><th>Risk</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'

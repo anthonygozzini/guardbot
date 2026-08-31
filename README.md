@@ -69,6 +69,12 @@ exact call, contract, chain and data before anything is signed**, and your own b
 signs it one at a time — or you copy the calldata to a hardware or offline signer. This page never
 sees a key and never batches signatures.
 
+Revoke also covers the non-EVM chains, each with its own signing path in the viewer: **TRON** via
+the injected `window.tronWeb` (TronLink / Trust) building `approve(spender, 0)`, and **Solana** via
+`window.solana` (Phantom / Trust) signing the SPL Token `revoke` instruction on the token account
+(built with `@solana/web3.js`, loaded lazily). Open the page in the wallet's in-app browser and the
+right provider is there.
+
 One non-obvious thing it gets right: **zeroing the ERC-20 approval to Permit2 does not clear the
 grants already inside Permit2**. Those live in Permit2's own books until they expire, and must be
 zeroed there — the blind spot this tool found in reading, closed in writing.
