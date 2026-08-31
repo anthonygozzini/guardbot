@@ -44,6 +44,8 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--sof
 .simrow{margin:9px 0;padding:8px 10px;border-radius:8px;font-size:.82rem;font-weight:600}
 .simok{background:#0d2a20;color:var(--accent)}
 .simwarn{background:#2a1f0f;color:var(--warn)}
+.wc-ok{margin:12px 0 0;color:var(--accent);font-size:.86rem}
+.wc-warn{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:#2a1f0f;color:var(--warn);font-size:.84rem;line-height:1.5}
 .tname{color:var(--soft);font-size:.78rem}
 @keyframes pulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.tag-cached{animation:none}}
@@ -66,14 +68,45 @@ a{color:var(--accent)}
   <p class="sub">Paste any address, see its standing token approvals across <b>EVM · TRON · Solana</b> — the chains a single revoke tool usually doesn't unify. Read-only, no wallet needed.</p>
   <form id="f">
     <input id="addr" placeholder="0x… (EVM)  ·  T… (TRON)  ·  base58 (Solana)" autocomplete="off" spellcheck="false">
+    <button id="connect" type="button" class="ghost">Connect wallet</button>
     <button id="go" type="submit">Scan</button>
   </form>
-  <p class="hint">Chain auto-detected from the address format. EVM scans Ethereum · BSC · Base · Arbitrum · Polygon.</p>
+  <p class="hint">Paste an address, or connect a wallet to use its own. Chain auto-detected. On a
+    phone, open this page inside your wallet’s browser (Trust Wallet, MetaMask, Rabby all have one).</p>
+  <div id="wconn"></div>
   <div id="out"></div>
 </div>
 <script>
 var f=document.getElementById('f'),addr=document.getElementById('addr'),go=document.getElementById('go'),out=document.getElementById('out');
 var CHAIN_IDS={ethereum:1,bsc:56,polygon:137,base:8453,arbitrum:42161,optimism:10};
+
+// Connect a wallet so you don't have to paste an address. window.ethereum is injected by desktop
+// extensions AND by every wallet's in-app browser (Trust Wallet, MetaMask, Rabby on mobile), so
+// this one path covers both without any SDK, projectId, or third-party relay. From plain mobile
+// Chrome there is no injected wallet — the hint tells you to open the page in the wallet's browser.
+var connect=document.getElementById('connect'), wconn=document.getElementById('wconn');
+connect.addEventListener('click',function(){
+  var eth=window.ethereum;
+  if(!eth){
+    wconn.innerHTML='<div class="wc-warn">No wallet in this browser. On a phone, open '
+      +'<b>127.0.0.1:8403/view</b> (or your machine’s LAN address) inside your wallet’s built-in '
+      +'browser — Trust Wallet, MetaMask and Rabby all have one — and tap Connect again. '
+      +'On desktop, install a wallet extension.</div>';
+    return;
+  }
+  connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
+  eth.request({method:'eth_requestAccounts'}).then(function(accts){
+    connect.disabled=false;
+    var a=accts&&accts[0];
+    if(!a){wconn.innerHTML='';return;}
+    addr.value=a;
+    wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span> — scanning…</div>';
+    f.dispatchEvent(new Event('submit'));
+  }).catch(function(e){
+    connect.disabled=false;
+    wconn.innerHTML='<div class="wc-warn">Not connected: '+esc((e&&e.message)||'cancelled')+'</div>';
+  });
+});
 
 // Revoking is the one thing here that writes. The rules are deliberate: the calldata is built
 // server-side (only three revoking calls exist there), shown in full BEFORE anything is signed,
@@ -113,7 +146,9 @@ function bindRevoke(){
         };
         document.getElementById('dosign').onclick=function(){
           var eth=window.ethereum;
-          if(!eth){msg.textContent='No browser wallet detected. Use “Copy calldata” instead.';return;}
+          if(!eth){msg.innerHTML='No wallet in this browser. On a phone, open this page inside your '
+            +'wallet’s browser (Trust Wallet / MetaMask / Rabby) and try again — or use <b>Copy '
+            +'calldata</b> and sign it in a hardware or offline signer.';return;}
           msg.textContent='Check your wallet…';
           eth.request({method:'eth_requestAccounts'}).then(function(accts){
             return eth.request({method:'wallet_switchEthereumChain',
