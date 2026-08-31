@@ -45,6 +45,8 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--sof
 .simok{background:#0d2a20;color:var(--accent)}
 .simwarn{background:#2a1f0f;color:var(--warn)}
 .wc-ok{margin:12px 0 0;color:var(--accent);font-size:.86rem}
+.wcqr{background:#fff;padding:14px;border-radius:10px;width:max-content;margin:6px auto}
+.wc-deeplink{display:inline-block;padding:8px 14px;border-radius:8px;background:var(--accent);color:#06251a;font-weight:700;text-decoration:none}
 .wc-warn{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:#2a1f0f;color:var(--warn);font-size:.84rem;line-height:1.5}
 .tname{color:var(--soft);font-size:.78rem}
 @keyframes pulse{50%{opacity:.45}}
@@ -97,29 +99,43 @@ function useAccounts(accts){
   f.dispatchEvent(new Event('submit'));
 }
 
-var _wcLoading;
+// The WalletConnect SDK externalizes its deps (bs58, viem, lit…), so a plain UMD <script> can't
+// run it — the bundle throws at load. esm.sh resolves the whole dep graph into browser ESM, loaded
+// with a dynamic import(). showQrModal is left OFF so we never pull the heavy Reown/AppKit modal
+// (which was the thing crashing); we render the pairing QR ourselves with a tiny standalone lib.
+var _qrLoad;
 function loadScript(src){
-  return _wcLoading||(_wcLoading=new Promise(function(res,rej){
-    var s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=function(){rej(new Error('failed to load WalletConnect'));};
-    document.head.appendChild(s);
-  }));
+  return new Promise(function(res,rej){
+    var s=document.createElement('script'); s.src=src; s.onload=res;
+    s.onerror=function(){rej(new Error('failed to load '+src));}; document.head.appendChild(s);
+  });
+}
+function showPairing(uri){
+  wconn.innerHTML='<div class="signbox"><div class="signhead">Scan with your wallet</div>'
+    +'<div id="wcqr" class="wcqr"></div>'
+    +'<div class="sigacts"><a class="wc-deeplink" href="'+esc(uri)+'">Open a wallet on this device</a>'
+    +'<button id="wccopy" class="ghost">Copy link</button></div>'
+    +'<div class="hint" style="margin-top:6px">Trust Wallet · MetaMask · Rabby · any WalletConnect wallet</div></div>';
+  document.getElementById('wccopy').onclick=function(){ navigator.clipboard.writeText(uri); };
+  (_qrLoad||(_qrLoad=loadScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js')))
+    .then(function(){ new QRCode(document.getElementById('wcqr'),{text:uri,width:224,height:224}); })
+    .catch(function(){ document.getElementById('wcqr').innerHTML='<div class="mono" style="word-break:break-all;font-size:.7rem">'+esc(uri)+'</div>'; });
 }
 function connectWalletConnect(){
-  wconn.innerHTML='<div class="status">Loading WalletConnect…</div>';
-  loadScript('https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2.24.0/dist/index.umd.js')
-   .then(function(){
-     return window.EthereumProvider.init({
-       projectId:WC_PID, chains:[1],
-       optionalChains:[56,137,8453,42161,10], showQrModal:true,
-       metadata:{name:'GuardBot',description:'Approvals & revoke',url:location.origin,icons:[]}
-     });
-   }).then(function(prov){
-     activeProvider=prov;
-     wconn.innerHTML='<div class="status">Scan the QR with your wallet…</div>';
-     return prov.enable().then(function(accts){ useAccounts(accts); });
-   }).catch(function(e){
-     wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
-   });
+  wconn.innerHTML='<div class="status">Starting WalletConnect…</div>';
+  import('https://esm.sh/@walletconnect/ethereum-provider@2.13.3').then(function(mod){
+    var EP=mod.EthereumProvider||mod.default;
+    return EP.init({
+      projectId:WC_PID, chains:[1], optionalChains:[56,137,8453,42161,10], showQrModal:false,
+      metadata:{name:'GuardBot',description:'Token approvals & revoke',url:location.origin,icons:[]}
+    });
+  }).then(function(prov){
+    activeProvider=prov;
+    prov.on('display_uri', showPairing);
+    return prov.enable().then(function(accts){ useAccounts(accts); });
+  }).catch(function(e){
+    wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
+  });
 }
 connect.addEventListener('click',function(){
   if(window.ethereum){
