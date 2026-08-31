@@ -228,6 +228,74 @@ class TestSolanaSafety(unittest.TestCase):
         self.assertIsNone(top1)   # unknown, never "fine"
 
 
+@live_only
+class TestRevokeEffect(unittest.TestCase):
+    """Encoding-correct is not the same as it-works. These simulate each revoke against a real
+    live grant via eth_simulateV1 and assert the grant is actually GONE afterwards — read-only,
+    no gas. The one thing they cannot prove is the wallet broadcasting the signed tx."""
+
+    def test_erc20_revoke_drives_allowance_to_zero(self):
+        import revoke
+        # 0x4E2A's unlimited USDT→Rango approval on BSC (matches the block explorer)
+        r = revoke.simulate_revoke("bsc", "approval",
+                                   "0x4E2A45E432E3EAC7F273f0eBEb8D1DaF8C59098A",
+                                   "0x55d398326f99059ff775485246999027b3197955",
+                                   "0x69460570c93f9de5e2edbc3052bf10125f0ca22d")
+        sim = r.get("simulation") or {}
+        if not sim.get("simulated"):
+            self.skipTest("RPC did not support eth_simulateV1")
+        self.assertEqual(sim.get("grant_after"), "0")
+        self.assertTrue(sim.get("works"))
+
+    def _find_and_check(self, chain, topic, addr_filter, kind, read_live, win=40, iters=30):
+        import approvals as A
+        import revoke
+        url = A._chain_rpc(chain, A.EVM_CFG[chain])
+        lb = A._block_number(url)
+        for i in range(iters):
+            hi, lo = lb - i * win, lb - i * win - win
+            try:
+                st, logs = A._getlogs_try(url, None, lo, hi, topic, addr_filter)
+            except Exception:
+                logs = None
+            for lg in (logs or []):
+                t = lg.get("topics") or []
+                if len(t) < 3:
+                    continue
+                owner = "0x" + t[1][-40:]
+                token = ("0x" + t[2][-40:]) if kind == "permit2" else lg["address"]
+                spender = ("0x" + t[3][-40:]) if kind == "permit2" and len(t) >= 4 else "0x" + t[2][-40:]
+                if not read_live(url, owner, token, spender):
+                    continue
+                r = revoke.simulate_revoke(chain, kind, owner, token, spender)
+                sim = r.get("simulation") or {}
+                if not sim.get("simulated"):
+                    self.skipTest("RPC did not support eth_simulateV1")
+                self.assertEqual(sim.get("grant_after"), "0",
+                                 f"{kind} not zeroed for {owner}/{token}/{spender}")
+                self.assertTrue(sim.get("works"))
+                return
+        self.skipTest(f"no live {kind} grant found in the sampled window")
+
+    def test_nft_operator_revoke_sets_false(self):
+        import approvals as A
+
+        def live(url, owner, coll, op):
+            r = A._rpc(url, "eth_call", [{"to": coll, "data": A.SEL_IS_APPROVED_FOR_ALL
+                                          + owner[2:].rjust(64, "0") + op[2:].rjust(64, "0")}, "latest"])
+            return bool(r) and r != "0x" and int(r, 16) == 1
+        self._find_and_check("base", A.APPROVAL_FOR_ALL_TOPIC, None, "nft_operator", live)
+
+    def test_permit2_revoke_zeroes_the_grant(self):
+        import approvals as A
+        import time as _t
+
+        def live(url, owner, token, spender):
+            amt, exp = A._permit2_allowance(url, owner, token, spender)
+            return amt > 0 and (exp == 0 or exp > int(_t.time()))
+        self._find_and_check("ethereum", A.PERMIT2_APPROVAL_TOPIC, A.PERMIT2, "permit2", live)
+
+
 class TestChainDetection(unittest.TestCase):
     def test_detects_each_family(self):
         self.assertEqual(approvals.detect_chain("0x" + "ab" * 20), "evm")

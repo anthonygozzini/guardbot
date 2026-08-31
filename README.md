@@ -37,6 +37,14 @@ One non-obvious thing it gets right: **zeroing the ERC-20 approval to Permit2 do
 grants already inside Permit2**. Those live in Permit2's own books until they expire, and must be
 zeroed there — the blind spot this tool found in reading, closed in writing.
 
+**Proven, not asserted.** Before you sign, `/v1/revoke?owner=…` runs the revoke through
+`eth_simulateV1` — it executes the transaction and re-reads the grant in the same simulated block,
+with no gas — and the page shows **✓ simulated: this sets the permission to 0** only when the read
+actually comes back zero. Where an RPC doesn't support the method it says so rather than bluffing.
+The test suite proves the same for all three kinds against live grants: ERC-20 allowance → 0, NFT
+`isApprovedForAll` → false, Permit2 amount → 0. The one thing no read-only check can prove is the
+wallet broadcasting the signed transaction — that is the wallet's job, not the calldata's.
+
 ## Solana token safety (`solcheck.py`)
 
 Solana has no DEX honeypot to simulate the way EVM does; the trap is a different shape and it is

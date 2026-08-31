@@ -89,10 +89,67 @@ def revoke_tx(chain, kind, token, spender):
                     "calldata to a hardware/offline signer."}
 
 
+def simulate_revoke(chain, kind, owner, token, spender):
+    """Prove the revoke's EFFECT without spending gas: eth_simulateV1 runs the revoke and, in the
+    SAME simulated block, re-reads the grant. works=True only when the read comes back zero — so
+    this checks that the transaction actually removes the permission, not merely that it encodes.
+
+    Where the public RPC doesn't support eth_simulateV1, `simulated` is False and no verdict is
+    invented — the calldata is still correct, it just couldn't be proven on that node."""
+    import approvals as A   # imported here so revoke_tx stays dependency-free for encoding-only use
+    built = revoke_tx(chain, kind, token, spender)
+    if built.get("error"):
+        return built
+    if not _is_addr(owner):
+        return {"error": "owner must be a 0x address to simulate the effect"}
+    tx = built["tx"]
+    o = owner.lower()
+
+    if kind in ("approval", "erc20"):
+        read_to = token.lower()
+        read_data = "0xdd62ed3e" + _a32(o) + _a32(spender)   # allowance(owner, spender)
+        decode = lambda h: int(h, 16)
+    elif kind in ("nft_operator", "nft"):
+        read_to = token.lower()
+        read_data = "0xe985e9c5" + _a32(o) + _a32(spender)   # isApprovedForAll(owner, operator)
+        decode = lambda h: int(h, 16)
+    else:  # permit2
+        read_to = PERMIT2.lower()
+        read_data = "0x927da105" + _a32(o) + _a32(token) + _a32(spender)  # Permit2.allowance
+        decode = lambda h: int(h[:66], 16)   # amount is the first word
+
+    rpc = A._chain_rpc(chain, A.EVM_CFG.get(chain, {}))
+    bundle = {"blockStateCalls": [{"calls": [
+        {"from": o, "to": tx["to"], "data": tx["data"]},
+        {"from": o, "to": read_to, "data": read_data},
+    ]}]}
+    try:
+        res = A._rpc(rpc, "eth_simulateV1", [bundle, "latest"])
+    except Exception as e:
+        res = {"__err": str(e)[:80]}
+    calls = (res or [None])[0].get("calls") if isinstance(res, list) and res else None
+    if not calls or len(calls) < 2:
+        built["simulation"] = {"simulated": False,
+                               "note": "this RPC does not support eth_simulateV1 — calldata is "
+                                       "correct but its effect could not be proven here"}
+        return built
+    ok_exec = str(calls[0].get("status")) in ("0x1", "1")
+    rd = calls[1].get("returnData") or "0x"
+    after = decode(rd) if rd != "0x" else None
+    built["simulation"] = {"simulated": True, "executes": ok_exec,
+                           "grant_after": None if after is None else str(after),
+                           "works": bool(ok_exec and after == 0)}
+    return built
+
+
 if __name__ == "__main__":
     import json
     import sys
     if len(sys.argv) < 5:
-        print("usage: revoke.py <chain> <kind> <token> <spender>")
+        print("usage: revoke.py <chain> <kind> <token> <spender> [owner]")
         raise SystemExit(2)
-    print(json.dumps(revoke_tx(*sys.argv[1:5]), indent=2))
+    if len(sys.argv) >= 6:
+        print(json.dumps(simulate_revoke(sys.argv[1], sys.argv[2], sys.argv[5],
+                                         sys.argv[3], sys.argv[4]), indent=2))
+    else:
+        print(json.dumps(revoke_tx(*sys.argv[1:5]), indent=2))

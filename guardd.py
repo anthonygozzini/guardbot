@@ -296,8 +296,13 @@ class H(BaseHTTPRequestHandler):
             q = parse_qs(u.query)
             g = lambda k: (q.get(k) or [""])[0].strip()
             try:
-                self._json(200, revoke_mod.revoke_tx(g("chain"), g("kind"),
-                                                     g("token"), g("spender")))
+                if g("owner"):
+                    # prove the effect before the user signs — simulate the revoke and re-read
+                    self._json(200, revoke_mod.simulate_revoke(g("chain"), g("kind"), g("owner"),
+                                                               g("token"), g("spender")))
+                else:
+                    self._json(200, revoke_mod.revoke_tx(g("chain"), g("kind"),
+                                                         g("token"), g("spender")))
             except Exception as e:
                 self._json(500, {"error": f"could not build the revoke tx: {e}"})
         elif u.path == "/v1/approvals":

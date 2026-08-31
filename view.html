@@ -41,6 +41,9 @@ button.rev:hover{border-color:var(--risk);color:var(--risk)}
 word-break:break-all;color:var(--faint);max-height:88px;overflow:auto}
 .sigacts{display:flex;gap:9px;margin-top:6px}
 button.ghost{background:transparent;border:1px solid var(--line);color:var(--soft)}
+.simrow{margin:9px 0;padding:8px 10px;border-radius:8px;font-size:.82rem;font-weight:600}
+.simok{background:#0d2a20;color:var(--accent)}
+.simwarn{background:#2a1f0f;color:var(--warn)}
 .tname{color:var(--soft);font-size:.78rem}
 @keyframes pulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.tag-cached{animation:none}}
@@ -81,8 +84,9 @@ function bindRevoke(){
   Array.prototype.forEach.call(document.querySelectorAll('button.rev'),function(b){
     b.addEventListener('click',function(){
       var q='chain='+encodeURIComponent(b.dataset.chain)+'&kind='+encodeURIComponent(b.dataset.kind)
-           +'&token='+encodeURIComponent(b.dataset.token)+'&spender='+encodeURIComponent(b.dataset.spender);
-      panel.innerHTML='<div class="status">Building the transaction…</div>';
+           +'&token='+encodeURIComponent(b.dataset.token)+'&spender='+encodeURIComponent(b.dataset.spender)
+           +'&owner='+encodeURIComponent(addr.value.trim());
+      panel.innerHTML='<div class="status">Building and simulating the transaction…</div>';
       fetch('/v1/revoke?'+q).then(function(r){return r.json();}).then(function(d){
         if(d.error){panel.innerHTML='<div class="err">'+esc(d.error)+'</div>';return;}
         panel.innerHTML=
@@ -91,6 +95,13 @@ function bindRevoke(){
           +'<div class="mono sigline"><b>to</b> '+esc(d.tx.to)+'</div>'
           +'<div class="mono sigline"><b>chain</b> '+esc(d.chain)+' ('+d.chain_id+')  <b>value</b> 0</div>'
           +'<div class="sigline">'+esc(d.human.effect)+'</div>'
+          +(function(sm){
+             if(!sm) return '';
+             if(!sm.simulated) return '<div class="simrow simwarn">⚠ couldn’t simulate on this RPC — the calldata is still correct, its effect just isn’t proven here</div>';
+             return sm.works
+               ? '<div class="simrow simok">✓ simulated on-chain: this sets the permission to 0 (no gas spent)</div>'
+               : '<div class="simrow simwarn">⚠ simulation did not reach zero (executed='+sm.executes+', after='+esc(sm.grant_after)+') — check before signing</div>';
+           })(d.simulation)
           +'<div class="mono sigdata">'+esc(d.tx.data)+'</div>'
           +'<div class="sigacts"><button id="dosign">Sign in my wallet</button>'
           +'<button id="docopy" class="ghost">Copy calldata</button></div>'
