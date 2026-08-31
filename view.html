@@ -91,7 +91,27 @@ var CHAIN_IDS={ethereum:1,bsc:56,polygon:137,base:8453,arbitrum:42161,optimism:1
 // Its 1.4MB SDK is loaded lazily and ONLY then, so the default page stays dependency-free.
 var connect=document.getElementById('connect'), wconn=document.getElementById('wconn');
 var activeProvider=window.ethereum||null, WC_PID='', wcProvider=null, connected=false;
+var wcUP=null, multi={evm:'',solana:'',tron:''};   // one WalletConnect session, up to 3 addresses
 try{ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){WC_PID=(c&&c.wc_project_id)||'';}).catch(function(){}); }catch(e){}
+
+// WalletConnect is multi-chain only through UniversalProvider with several NAMESPACES in one session
+// (ethereum-provider does eip155 alone). We ask for eip155 + solana + tron as OPTIONAL, so one QR
+// scan connects to every one the wallet actually supports, and unsupported ones are simply dropped.
+var SOL_CAIP='solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', TRON_CAIP='tron:0x2b6653dc';
+var WC_NS={
+  eip155:{ chains:['eip155:1','eip155:56','eip155:137','eip155:8453','eip155:42161','eip155:10'],
+    methods:['eth_sendTransaction','personal_sign','eth_signTypedData_v4','wallet_switchEthereumChain','eth_accounts','eth_requestAccounts'],
+    events:['chainChanged','accountsChanged'] },
+  solana:{ chains:[SOL_CAIP],
+    methods:['solana_signTransaction','solana_signAndSendTransaction','solana_signMessage'], events:[] },
+  tron:{ chains:[TRON_CAIP],
+    methods:['tron_signTransaction','tron_signMessage'], events:[] }
+};
+function nsAccounts(ns){
+  var s=wcUP&&wcUP.session; if(!s||!s.namespaces||!s.namespaces[ns]) return [];
+  return (s.namespaces[ns].accounts||[]).map(function(a){ var p=String(a).split(':'); return p[p.length-1]; });
+}
+function wcHas(ns){ return !!(wcUP&&wcUP.session&&wcUP.session.namespaces&&wcUP.session.namespaces[ns]); }
 
 // a WalletConnect account can come back CAIP-formatted (eip155:1:0x…) — pull the raw address out
 function normAddr(a){ var m=String(a||'').match(/0x[0-9a-fA-F]{40}/); return m?m[0]:''; }
@@ -109,12 +129,13 @@ function setConnected(a, how){
 // it was live gave "No matching key". So we init once (wcInit, cached), reuse the provider, and
 // end sessions the SDK's own way with disconnect() — never by nuking storage under it.
 function resetWalletUI(){
-  activeProvider=window.ethereum||null; connected=false;
+  activeProvider=window.ethereum||null; connected=false; multi={evm:'',solana:'',tron:''};
   addr.value=''; wconn.innerHTML=''; out.innerHTML='';
   connect.textContent='Connect wallet'; connect.classList.remove('danger'); connect.disabled=false;
 }
 function disconnectWallet(){
-  if(wcProvider){ try{ Promise.resolve(wcProvider.disconnect()).catch(function(){}); }catch(e){} }
+  if(wcUP){ try{ Promise.resolve(wcUP.disconnect()).catch(function(){}); }catch(e){} }
+  else if(wcProvider){ try{ Promise.resolve(wcProvider.disconnect()).catch(function(){}); }catch(e){} }
   resetWalletUI();
 }
 
@@ -150,17 +171,14 @@ function showPairing(uri){
 var wcInit=null;
 function getWCProvider(){
   if(wcInit) return wcInit;   // init the singleton Core exactly once
-  wcInit=import('https://esm.sh/@walletconnect/ethereum-provider@2.21.0').then(function(mod){
-    var EP=mod.EthereumProvider||mod.default;
-    return EP.init({
-      projectId:WC_PID, chains:[], optionalChains:[1,56,137,8453,42161,10], showQrModal:false,
-      metadata:{name:'GuardBot',description:'Token approvals & revoke',url:location.origin,icons:[]}
-    });
-  }).then(function(prov){
-    prov.on('display_uri', showPairing);
-    prov.on('disconnect', function(){ if(connected) resetWalletUI(); });   // wallet ended it
-    prov.on('accountsChanged', function(a){ var x=normAddr((a||[])[0]); if(x) setConnected(x,'via WalletConnect'); });
-    return prov;
+  wcInit=import('https://esm.sh/@walletconnect/universal-provider@2.21.0').then(function(mod){
+    var UP=mod.UniversalProvider||mod.default;
+    return UP.init({ projectId:WC_PID,
+      metadata:{name:'GuardBot',description:'Token approvals & revoke',url:location.origin,icons:[]} });
+  }).then(function(up){
+    up.on('display_uri', showPairing);
+    up.on('session_delete', function(){ if(connected) resetWalletUI(); });   // wallet ended it
+    return up;
   });
   return wcInit;
 }
@@ -186,27 +204,68 @@ function connectTron(){
 }
 function connectWalletConnect(){
   wconn.innerHTML='<div class="status">Starting WalletConnect…</div>';
-  getWCProvider().then(function(prov){
-    activeProvider=prov; wcProvider=prov;
-    // a restored session may be dead (ended on the wallet) — end it cleanly, then pair fresh
-    var live=prov.session||(prov.accounts&&prov.accounts.length);
-    var pre=live?Promise.resolve(prov.disconnect()).catch(function(){}):Promise.resolve();
-    return pre.then(function(){
-      // no chain is required (chains:[]), so the wallet approves whatever it has and enable()
-      // resolves; a timeout turns any relay stall into a message instead of an endless "Scanning…"
-      var timed=new Promise(function(_,rej){ setTimeout(function(){rej(new Error('__timeout__'));},45000); });
-      return Promise.race([prov.enable(), timed]).then(function(accts){
-        useAccounts((accts&&accts.length)?accts:(prov.accounts||[]),'via WalletConnect');
-      });
-    });
+  getWCProvider().then(function(up){
+    wcUP=up; wcProvider=up;
+    if(up.session){ afterWCConnect(); return; }   // reuse a live session
+    var timed=new Promise(function(_,rej){ setTimeout(function(){rej(new Error('__timeout__'));},90000); });
+    // one QR, several namespaces: the wallet approves eip155 + whichever of solana/tron it supports
+    return Promise.race([ up.connect({optionalNamespaces:WC_NS}), timed ]).then(afterWCConnect);
   }).catch(function(e){
-    if(e&&e.message==='__timeout__'){
-      wconn.innerHTML='<div class="wc-warn">The wallet approved but the session didn’t finish in time. '
-        +'Tap <b>Connect</b> again, or reload the page and retry.</div>';
-    } else {
-      wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
-    }
+    wconn.innerHTML='<div class="wc-warn">'+(e&&e.message==='__timeout__'
+      ? 'The wallet approved but the session didn’t finish in 90s. Tap Connect again or reload.'
+      : 'WalletConnect failed: '+esc((e&&e.message)||'error'))+'</div>';
   });
+}
+function afterWCConnect(){
+  multi.evm=(nsAccounts('eip155').map(normAddr).filter(Boolean))[0]||'';
+  multi.solana=nsAccounts('solana')[0]||'';
+  multi.tron=nsAccounts('tron')[0]||'';
+  if(!multi.evm && !multi.solana && !multi.tron){
+    wconn.innerHTML='<div class="wc-warn">Approved, but the wallet returned no address.</div>'; return; }
+  connected=true; connect.disabled=false; connect.textContent='Disconnect'; connect.classList.add('danger');
+  addr.value=multi.evm||multi.solana||multi.tron;   // keep the paste field meaningful
+  showMulti(); scanMulti();
+}
+function showMulti(){
+  var parts=[];
+  if(multi.evm) parts.push('EVM <span class="mono">'+esc(short(multi.evm))+'</span>');
+  if(multi.solana) parts.push('SOL <span class="mono">'+esc(short(multi.solana))+'</span>');
+  if(multi.tron) parts.push('TRON <span class="mono">'+esc(short(multi.tron))+'</span>');
+  var miss=[]; if(!multi.solana) miss.push('Solana'); if(!multi.tron) miss.push('TRON');
+  wconn.innerHTML='<div class="wc-ok">Connected · '+parts.join(' &nbsp;·&nbsp; ')
+    +' <span class="hint" style="margin:0">via WalletConnect</span></div>'
+    +(miss.length?'<div class="hint" style="margin:2px 0 0">'+esc(miss.join(' & '))
+      +' not exposed by this wallet over WalletConnect — open GuardBot in that wallet’s own browser to include it.</div>':'');
+}
+function mergeResults(results){
+  var m={address:'connected wallets', address_type:'EVM + Solana + TRON', items:[], chains_scanned:[],
+    count:0, risky_count:0, degraded_chains:[], probed_chains:[], partial_chains:[]};
+  function uni(dst,src){ (src||[]).forEach(function(c){ if(dst.indexOf(c)<0) dst.push(c); }); }
+  results.forEach(function(d){
+    if(!d||d.error||!d.items) return;
+    m.items=m.items.concat(d.items);
+    uni(m.chains_scanned,d.chains_scanned); uni(m.degraded_chains,d.degraded_chains);
+    uni(m.probed_chains,d.probed_chains); uni(m.partial_chains,d.partial_chains);
+  });
+  m.count=m.items.length;
+  m.risky_count=m.items.filter(function(i){ return ['medium','high','critical'].indexOf(i.risk_level)>=0; }).length;
+  m.items.sort(function(a,b){ return (b.risk_score||0)-(a.risk_score||0); });
+  return m;
+}
+function scanMulti(){
+  var addrs=[multi.evm,multi.solana,multi.tron].filter(Boolean);
+  if(!addrs.length) return;
+  go.disabled=true;
+  var tick=0, timer=setInterval(function(){ tick+=5; if(go.disabled)
+    out.innerHTML='<div class="status">Scanning your wallets across chains… '+tick+'s '
+      +'<span class="hint" style="display:inline">(EVM + Solana + TRON, ~30–90s)</span></div>'; },5000);
+  out.innerHTML='<div class="status">Scanning '+addrs.length+' wallet'+(addrs.length>1?'s':'')+'…</div>';
+  Promise.all(addrs.map(function(a){
+    return fetch('/v1/approvals?address='+encodeURIComponent(a)).then(function(r){return r.json();})
+      .catch(function(){ return {items:[]}; });
+  })).then(function(results){ clearInterval(timer); go.disabled=false; render(mergeResults(results),'live'); })
+    .catch(function(e){ clearInterval(timer); go.disabled=false;
+      out.innerHTML='<div class="err">Scan failed: '+esc((e&&e.message)||'error')+'</div>'; });
 }
 connect.addEventListener('click',function(){
   if(connected){ disconnectWallet(); return; }   // the button is red "Disconnect" now
@@ -251,18 +310,41 @@ function revokeTron(b){
     'Sign in TronLink / Trust');
   document.getElementById('dosign').onclick=function(){
     var tw=window.tronWeb;
-    if(!tw||!tw.defaultAddress||!tw.defaultAddress.base58){
-      msg.innerHTML='No TRON wallet here. Open this page in TronLink or Trust Wallet’s browser.';return;}
-    msg.textContent='Check your wallet…';
-    tw.contract().at(token).then(function(c){ return c.approve(spender,0).send(); })
-      .then(function(h){ msg.innerHTML='Sent: <span class="mono">'+esc(h)+'</span>. Re-scan once it confirms.'; })
-      .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+    if(tw&&tw.defaultAddress&&tw.defaultAddress.base58){   // injected TronLink / Trust in-app browser
+      msg.textContent='Check your wallet…';
+      tw.contract().at(token).then(function(c){ return c.approve(spender,0).send(); })
+        .then(function(h){ msg.innerHTML='Sent: <span class="mono">'+esc(h)+'</span>. Re-scan once it confirms.'; })
+        .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+      return;
+    }
+    if(wcHas('tron')){   // connected by QR: build the unsigned tx with TronWeb, sign over WalletConnect
+      msg.textContent='Loading…';
+      import('https://esm.sh/tronweb@6.0.0').then(function(TW){
+        var TronWeb=TW.TronWeb||TW.default||TW;
+        var tron=new TronWeb({fullHost:'https://api.trongrid.io'});
+        tron.setAddress(multi.tron);
+        var sel='approve(address,uint256)';
+        return tron.transactionBuilder.triggerSmartContract(token, sel,
+          {feeLimit:100000000},
+          [{type:'address',value:spender},{type:'uint256',value:0}], multi.tron
+        ).then(function(r){
+          var unsigned=r.transaction;
+          return wcUP.request({method:'tron_signTransaction', params:{address:multi.tron, transaction:unsigned}}, TRON_CAIP)
+            .then(function(signed){ var s=(signed&&signed.result&&signed.transaction)||signed;
+              return tron.trx.sendRawTransaction(s); });
+        });
+      }).then(function(res){ var h=(res&&(res.txid||res.txID))||JSON.stringify(res);
+        msg.innerHTML='Sent: <span class="mono">'+esc(h)+'</span>. Re-scan once it confirms.'; })
+        .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+      return;
+    }
+    msg.innerHTML='No TRON wallet here. Open GuardBot in TronLink or Trust Wallet’s browser to revoke on TRON.';
   };
 }
 // Solana: a "delegate" is revoked with the SPL Token `revoke` instruction on the token ACCOUNT,
 // built with @solana/spl-token and signed by window.solana (Phantom / Trust).
 function revokeSolana(b){
-  var tokenAccount=b.dataset.account, owner=addr.value.trim();
+  var tokenAccount=b.dataset.account, owner=multi.solana||addr.value.trim();
   if(!tokenAccount){ _sigbox.innerHTML='<div class="err">missing token account for this delegate</div>'; return; }
   var msg=sigbox('This is exactly what you would sign',
     '<div class="mono sigline"><b>call</b> revoke(token account)</div>'
@@ -271,22 +353,26 @@ function revokeSolana(b){
     'Sign in Phantom / Trust');
   document.getElementById('dosign').onclick=function(){
     var sol=window.solana||(window.phantom&&window.phantom.solana);
-    if(!sol){ msg.innerHTML='No Solana wallet here. Open this page in Phantom or Trust Wallet’s browser.'; return; }
+    if(!sol && !wcHas('solana')){
+      msg.innerHTML='No Solana wallet here. Open GuardBot in Phantom or Trust Wallet’s browser, or connect a Solana-capable wallet by QR.'; return; }
     msg.textContent='Loading…';
     Promise.all([import('https://esm.sh/@solana/web3.js@1.95.8'),
                  import('https://esm.sh/@solana/spl-token@0.4.9')]).then(function(m){
       var web3=m[0], spl=m[1];
       var conn=new web3.Connection('https://api.mainnet-beta.solana.com','confirmed');
-      return sol.connect().then(function(){
-        var ownerPk=new web3.PublicKey(owner), taPk=new web3.PublicKey(tokenAccount);
-        var tx=new web3.Transaction().add(spl.createRevokeInstruction(taPk, ownerPk));
-        tx.feePayer=ownerPk;
-        return conn.getLatestBlockhash().then(function(bh){
-          tx.recentBlockhash=bh.blockhash;
-          return sol.signAndSendTransaction(tx);
-        });
+      var ownerPk=new web3.PublicKey(owner), taPk=new web3.PublicKey(tokenAccount);
+      var tx=new web3.Transaction().add(spl.createRevokeInstruction(taPk, ownerPk));
+      tx.feePayer=ownerPk;
+      return conn.getLatestBlockhash().then(function(bh){
+        tx.recentBlockhash=bh.blockhash;
+        if(sol){ return sol.connect().then(function(){ return sol.signAndSendTransaction(tx); }); }
+        // WalletConnect Solana: hand the wallet the serialized (unsigned) transaction, base64
+        var raw=tx.serialize({requireAllSignatures:false, verifySignatures:false});
+        var b64=btoa(String.fromCharCode.apply(null, new Uint8Array(raw)));
+        return wcUP.request({method:'solana_signAndSendTransaction',
+          params:{transaction:b64, pubkey:owner}}, SOL_CAIP);
       });
-    }).then(function(res){ var s=(res&&res.signature)||res;
+    }).then(function(res){ var s=(res&&(res.signature||res.result||res.txid))||res;
       msg.innerHTML='Sent: <span class="mono">'+esc(s)+'</span>. Re-scan once it confirms.'; })
       .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
   };
@@ -326,23 +412,25 @@ function bindRevoke(){
             msg.textContent='Copied — sign it with a hardware or offline signer.';});
         };
         document.getElementById('dosign').onclick=function(){
-          var eth=activeProvider||window.ethereum;   // injected, or a WalletConnect session
-          if(!eth){msg.innerHTML='No wallet connected. Tap <b>Connect wallet</b> above first '
-            +'(in your wallet’s browser, or via WalletConnect), or use <b>Copy calldata</b> and '
-            +'sign it in a hardware or offline signer.';return;}
-          msg.textContent='Check your wallet…';
-          // use the already-connected account — re-requesting accounts on a live WalletConnect
-          // session can pop a fresh pairing page instead of the transaction
-          var from=addr.value.trim();
-          var acct=from?Promise.resolve(from):eth.request({method:'eth_requestAccounts'}).then(function(a){return a[0];});
-          acct.then(function(from){
-            return eth.request({method:'wallet_switchEthereumChain', params:[{chainId:d.tx.chainId}]})
+          var from=multi.evm||addr.value.trim();
+          var txp={from:from,to:d.tx.to,data:d.tx.data,value:'0x0'};
+          var send;
+          if(wcHas('eip155')){
+            // WalletConnect session (UniversalProvider): target the chain by CAIP id, no switch call
+            msg.textContent='Check your wallet…';
+            send=wcUP.request({method:'eth_sendTransaction', params:[txp]}, 'eip155:'+parseInt(d.tx.chainId,16));
+          } else {
+            var eth=window.ethereum||activeProvider;
+            if(!eth){msg.innerHTML='No wallet connected. Tap <b>Connect wallet</b> above first '
+              +'(in your wallet’s browser, or via WalletConnect), or use <b>Copy calldata</b> and '
+              +'sign it in a hardware or offline signer.';return;}
+            msg.textContent='Check your wallet…';
+            txp.chainId=d.tx.chainId;
+            send=eth.request({method:'wallet_switchEthereumChain', params:[{chainId:d.tx.chainId}]})
               .catch(function(){})   // wallet may not support switch over WC; try the send anyway
-              .then(function(){
-                return eth.request({method:'eth_sendTransaction',
-                  params:[{from:from,to:d.tx.to,data:d.tx.data,value:'0x0',chainId:d.tx.chainId}]});
-              });
-          }).then(function(hash){
+              .then(function(){ return eth.request({method:'eth_sendTransaction', params:[txp]}); });
+          }
+          send.then(function(hash){
             msg.innerHTML='Sent: <span class="mono">'+esc(hash)+'</span>. Re-scan once it confirms.';
           }).catch(function(e){
             msg.textContent='Not signed: '+((e&&e.message)||'cancelled');
@@ -431,11 +519,22 @@ function render(d,mode){
 // the page kept reloading to /view? every scan, and the wallet state never settled.
 function runScan(){
   var a=addr.value.trim(); if(!a)return;
-  go.disabled=true; out.innerHTML='<div class="status">Scanning…</div>';
+  go.disabled=true; out.innerHTML='<div class="status">Scanning… contacting server</div>';
+  var ctl=('AbortController' in window)?new AbortController():null;
+  var killer=setTimeout(function(){ if(ctl) ctl.abort(); },150000);   // no infinite "Scanning…"
+  var tick=0, timer=setInterval(function(){ tick+=5;
+    if(go.disabled) out.innerHTML='<div class="status">Scanning live across chains… '+tick+'s '
+      +'<span class="hint" style="display:inline">(a busy wallet on 6 EVM chains + TRON + Solana can take ~30–90s)</span></div>';
+  },5000);
+  function done(){ clearInterval(timer); clearTimeout(killer); go.disabled=false; }
   function live(){
-    fetch('/v1/approvals?address='+encodeURIComponent(a)).then(function(r){return r.json();}).then(function(d){
-      go.disabled=false; render(d,'live');
-    }).catch(function(err){go.disabled=false;out.innerHTML='<div class="err">Request failed: '+esc(err.message)+'. Is the server running?</div>';});
+    fetch('/v1/approvals?address='+encodeURIComponent(a), ctl?{signal:ctl.signal}:{})
+      .then(function(r){return r.json();}).then(function(d){ done(); render(d,'live'); })
+      .catch(function(err){ done();
+        var m=(err&&err.name==='AbortError')
+          ?'the scan passed 150s and was stopped — an RPC or the server is slow right now; tap Scan to retry'
+          :(((err&&err.message)||'error')+'. Is the server running?');
+        out.innerHTML='<div class="err">Request failed: '+esc(m)+'</div>'; });
   }
   fetch('/v1/approvals?cached=1&address='+encodeURIComponent(a)).then(function(r){return r.json();}).then(function(d){
     if(d&&!d.error&&d.items&&d.items.length) render(d,'cached');
