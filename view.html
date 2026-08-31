@@ -256,16 +256,35 @@ function scanMulti(){
   var addrs=[multi.evm,multi.solana,multi.tron].filter(Boolean);
   if(!addrs.length) return;
   go.disabled=true;
-  var tick=0, timer=setInterval(function(){ tick+=5; if(go.disabled)
-    out.innerHTML='<div class="status">Scanning your wallets across chains… '+tick+'s '
-      +'<span class="hint" style="display:inline">(EVM + Solana + TRON, ~30–90s)</span></div>'; },5000);
-  out.innerHTML='<div class="status">Scanning '+addrs.length+' wallet'+(addrs.length>1?'s':'')+'…</div>';
-  Promise.all(addrs.map(function(a){
-    return fetch('/v1/approvals?address='+encodeURIComponent(a)).then(function(r){return r.json();})
-      .catch(function(){ return {items:[]}; });
-  })).then(function(results){ clearInterval(timer); go.disabled=false; render(mergeResults(results),'live'); })
-    .catch(function(e){ clearInterval(timer); go.disabled=false;
-      out.innerHTML='<div class="err">Scan failed: '+esc((e&&e.message)||'error')+'</div>'; });
+  // each wallet is scanned independently and BOUNDED: a stuck free-RPC can't hang the whole view,
+  // and results paint as they land — EVM first, the slower chains fill in — so it never freezes.
+  var acc=[], slow=[], done=0, tick=0;
+  var timer=setInterval(function(){ tick+=5; if(done<addrs.length) paint(); },5000);
+  function paint(){
+    var note='<div class="status">Scanning your wallets across chains… '+tick+'s · '
+      +done+'/'+addrs.length+' done'
+      +(slow.length?' · <span style="color:var(--warn)">'+slow.length+' timed out (RPC slow)</span>':'')
+      +' <span class="hint" style="display:inline">(free public RPCs, can be slow)</span></div>';
+    var merged=mergeResults(acc);
+    if(merged.items.length){ render(merged,'live'); out.insertAdjacentHTML('afterbegin',note); }
+    else out.innerHTML=note;   // don't flash "no approvals ✅" while other wallets are still scanning
+  }
+  function finish(){ clearInterval(timer); go.disabled=false;
+    render(mergeResults(acc),'live');
+    if(slow.length) out.insertAdjacentHTML('afterbegin',
+      '<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
+      +esc(slow.length+' wallet'+(slow.length>1?'s':'')+' timed out on the free RPCs and '+(slow.length>1?'were':'was')
+      +' skipped — tap Scan to retry')+'</div>'); }
+  addrs.forEach(function(a){
+    var ctl=('AbortController' in window)?new AbortController():null;
+    var to=setTimeout(function(){ if(ctl) ctl.abort(); },110000);
+    fetch('/v1/approvals?address='+encodeURIComponent(a), ctl?{signal:ctl.signal}:{})
+      .then(function(r){return r.json();})
+      .then(function(d){ clearTimeout(to); if(d&&!d.error&&d.items) acc.push(d); else slow.push(a); })
+      .catch(function(){ clearTimeout(to); slow.push(a); })
+      .then(function(){ done++; if(done>=addrs.length) finish(); else paint(); });
+  });
+  paint();
 }
 connect.addEventListener('click',function(){
   if(connected){ disconnectWallet(); return; }   // the button is red "Disconnect" now
