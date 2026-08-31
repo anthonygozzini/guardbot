@@ -7,10 +7,37 @@ funds: it only reads public data and simulates. **No third-party safety API is c
 chain** — Solana is read first-hand too (`solcheck.py`).
 
 Designed as a typed **MCP tool** an agent calls *before* it buys, plus a plain HTTP API,
-with per-call **x402** payments.
+with optional per-call **x402** payments.
 
 Every check carries its proof: whether the sell actually reverted, what the round trip really
 returned, how deep the pool is, which privileged functions are in the deployed bytecode.
+
+## Quickstart
+
+**No dependencies** (Python 3.8+ standard library only — nothing to `pip install`), **no keys**,
+**no account**. It runs on your machine and reads public RPCs; queries are live and ephemeral.
+
+```bash
+git clone https://github.com/anthonygozzini/guardbot && cd guardbot
+python3 guardd.py          # then open http://127.0.0.1:8403/view
+```
+
+That's it. From the CLI instead:
+```bash
+python3 approvals.py  0x4E2A45E432E3EAC7F273f0eBEb8D1DaF8C59098A   # what has a wallet handed out?
+python3 tokencheck.py bsc 0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82  # is this token a trap?
+python3 solcheck.py   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v   # Solana token safety
+python3 -m unittest discover -s tests                              # 27 unit tests, ~5ms, prove it
+```
+
+Point an agent at it as an **MCP tool** (Claude Desktop / Claude Code / VibeKit):
+```json
+{ "mcpServers": { "guardbot": { "command": "python3",
+  "args": ["/absolute/path/to/guardbot/mcp_server.py"] } } }
+```
+It exposes `check_token(chain, address)` and `check_approvals(address)`.
+
+Data ages, so once in a while: `python3 tools/refresh.py` re-mines everything from the chain.
 
 GuardBot does both sides of safety:
 - **Prevent** — is a token a trap *before* you buy? Answered **first-hand**: we simulate
@@ -152,8 +179,13 @@ are. 35/35 pass.
 - `approvals.py` — approval viewer: `approvals(address)` across EVM (Approval events + live
   allowance, the revoke.cash method), TRON (TronScan), Solana (SPL delegates via RPC).
 - `guardd.py` — HTTP daemon: `/v1/check`, `/v1/approvals`, `/view` (browser UI), x402 payments.
-- `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` (our simulator)
+- `tokencheck.py` / `solcheck.py` / `troncheck.py` — first-hand token-safety engines for EVM
+  (buy-and-sell simulation), Solana (mint authorities + Token-2022 extensions) and TRON
+  (bytecode seize/blacklist/mint scan). No third-party verdict.
+- `revoke.py` — builds the exact revoking calldata (three calls only) and simulates its effect.
+- `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` (our engines)
   and `check_approvals(address)` as typed tools for an agent.
+- `tools/refresh.py` — re-mines every chain-derived snapshot in one command.
 - `keccak.py` — keccak256 in pure Python, so selectors, event topics and storage slots are
   computed here rather than copied (hashlib ships SHA3-256, which is not keccak256).
 - `tools/mine_*.py` — one-off miners that build the probe universes and the symbol registry
@@ -288,7 +320,8 @@ Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalan
 - [x] Revoke: exact calldata for the three revoking calls, signed by your own wallet or
       exported to a hardware/offline signer (`revoke.py`, `/v1/revoke`).
 - [x] Freshness: mined data is timestamped, its age is reported, `tools/refresh.py` re-mines all.
-- [ ] TRON token safety (approvals are covered; a TRC-20 safety engine is not built).
+- [x] TRON token safety (`troncheck.py`): bytecode scan for seize/blacklist/mint powers, read
+      first-hand from the TRON node — no vendor verdict.
 - [ ] Packaging / hosted demo — it is a local repo today.
 - [ ] VibeKit plug-in packaging + example agent.
 - [ ] Multi-chain expansion + latency SLA.

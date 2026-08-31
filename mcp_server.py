@@ -16,6 +16,7 @@ import sys
 import guard
 import solcheck
 import tokencheck
+import troncheck
 import approvals as approvals_mod
 
 PROTOCOL = "2024-11-05"
@@ -97,6 +98,8 @@ def handle(msg):
                 chain = (args.get("chain") or "").lower()
                 if chain == "solana":
                     verdict = solcheck.check_token(args.get("address", ""))
+                elif chain == "tron":
+                    verdict = troncheck.check_token(args.get("address", ""))
                 elif chain in tokencheck.RPCS:
                     verdict = tokencheck.check_token(chain, args.get("address", ""))
                 else:

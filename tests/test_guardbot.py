@@ -296,6 +296,37 @@ class TestRevokeEffect(unittest.TestCase):
         self._find_and_check("ethereum", A.PERMIT2_APPROVAL_TOPIC, A.PERMIT2, "permit2", live)
 
 
+class TestTronSafety(unittest.TestCase):
+    def test_base58_to_hex_address(self):
+        import troncheck
+        h = troncheck.b58_to_hex("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")   # USDT-TRON
+        self.assertTrue(h and h.startswith("41") and len(h) == 42)
+
+    def test_non_tron_address_rejected(self):
+        import troncheck
+        self.assertIsNone(troncheck.b58_to_hex("0x" + "ab" * 20))
+
+    def test_bytecode_scan_flags_seizure(self):
+        import troncheck
+        from keccak import selector
+        # a bytecode blob that contains the destroyBlackFunds selector must be caught
+        blob = "6080" + selector("destroyBlackFunds(address)")[2:] + "00" * 8
+        self.assertIn(selector("destroyBlackFunds(address)")[2:], blob)
+
+
+@live_only
+class TestLiveTronSafety(unittest.TestCase):
+    def test_usdt_tron_is_warn_not_block(self):
+        """USDT-TRON genuinely has destroyBlackFunds/blacklist — that is a heavy warning, not a
+        scam. Scoring it `block` was the same false positive as EVM freeze / Solana freeze."""
+        import troncheck
+        r = troncheck.check_token("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
+        if r.get("error"):
+            self.skipTest("TronGrid unavailable")
+        self.assertEqual(r["verdict"], "warn")
+        self.assertTrue(any(c["name"] == "seize_funds" for c in r["checks"]))
+
+
 class TestChainDetection(unittest.TestCase):
     def test_detects_each_family(self):
         self.assertEqual(approvals.detect_chain("0x" + "ab" * 20), "evm")

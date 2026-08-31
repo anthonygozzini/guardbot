@@ -31,6 +31,7 @@ import approvals as approvals_mod
 import revoke as revoke_mod
 import solcheck
 import tokencheck
+import troncheck
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -166,14 +167,14 @@ LLMS = f"""# GuardBot — pre-trade safety for agents & bots
 
 Ask before you buy: is this token a rug / honeypot / trap? GuardBot answers first-hand —
 on EVM it simulates buying the token and selling it back against live liquidity; on Solana
-it reads the mint's authorities, Token-2022 extensions and holder concentration. No
-third-party safety API is consulted.
+it reads the mint's authorities, Token-2022 extensions and holder concentration; on TRON it
+reads the deployed bytecode for seize/blacklist/mint powers. No third-party safety API.
 
 ## Endpoints
 GET /v1/tokencheck?chain=<chain>&address=<token>   is this token a trap?
 GET /v1/approvals?address=<wallet>                 what has this wallet handed out?
-GET /v1/revoke?chain=&kind=&token=&spender=        calldata that takes a permission back
-chain: ethereum | bsc | base | arbitrum | polygon | optimism | solana
+GET /v1/revoke?chain=&kind=&token=&spender=&owner= calldata that takes a permission back (+ sim)
+chain: ethereum | bsc | base | arbitrum | polygon | optimism | solana | tron
 
 ## Response
 {{"verdict":"safe|warn|block","score":0-100,"checks":[{{"name","status","detail","evidence"}}],"sources":[...]}}
@@ -286,6 +287,8 @@ class H(BaseHTTPRequestHandler):
             try:
                 if chain == "solana":
                     self._json(200, solcheck.check_token(token))
+                elif chain == "tron":
+                    self._json(200, troncheck.check_token(token))
                 else:
                     self._json(200, tokencheck.check_token(chain, token))
             except Exception as e:
