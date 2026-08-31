@@ -330,6 +330,36 @@ connect.addEventListener('click',function(){
 // server-side (only three revoking calls exist there), shown in full BEFORE anything is signed,
 // signed one at a time by your own wallet, and always exportable so a hardware or offline signer
 // can do it instead. This page never sees a key and never batches signatures.
+// After a revoke is signed the page must not pretend nothing happened: the sign button goes
+// Pending, the receipt is polled on-chain through the same provider that signed, and a confirmed
+// revoke triggers a re-scan so the row disappears because the ALLOWANCE is now zero — the table
+// only ever changes on first-hand data, never on optimism.
+function evmReceipt(hash, chainIdHex){
+  if(wcHas('eip155'))
+    return wcUP.request({method:'eth_getTransactionReceipt', params:[hash]}, 'eip155:'+parseInt(chainIdHex,16));
+  var eth=window.ethereum||activeProvider;
+  return eth?eth.request({method:'eth_getTransactionReceipt', params:[hash]}):Promise.reject(new Error('no provider'));
+}
+function rescanSoon(ms){ setTimeout(function(){ if(multi.evm||multi.solana||multi.tron) scanMulti(); else runScan(); }, ms||1500); }
+function watchRevoke(hash, chainIdHex, msg, btn){
+  var n=0, iv=setInterval(function(){
+    n++;
+    if(n>60){ clearInterval(iv);
+      msg.innerHTML='Sent: <span class="mono">'+esc(hash)+'</span> — not confirmed after 4 min; re-scan later.'; return; }
+    evmReceipt(hash, chainIdHex).then(function(r){
+      if(!r) return;   // not mined yet
+      clearInterval(iv);
+      if(r.status==='0x1'){
+        if(btn) btn.textContent='Revoked ✓';
+        msg.innerHTML='✓ Confirmed on-chain — this permission is now 0. Refreshing the table…';
+        rescanSoon(1500);
+      } else {
+        if(btn){ btn.disabled=false; btn.textContent='Sign in my wallet'; }
+        msg.innerHTML='✗ Transaction reverted on-chain — the approval is unchanged.';
+      }
+    }).catch(function(){});
+  },4000);
+}
 var _sigbox;
 function sigbox(head, lines, btnLabel){
   _sigbox.innerHTML='<div class="signbox"><div class="signhead">'+esc(head)+'</div>'+lines
@@ -346,12 +376,16 @@ function revokeTron(b){
     +'<div class="sigline">Sets this spender’s TRC-20 allowance on TRON to zero.</div>',
     'Sign in TronLink / Trust');
   document.getElementById('dosign').onclick=function(){
-    var tw=window.tronWeb;
+    var btn=this, tw=window.tronWeb;
+    function sent(h){ btn.disabled=true; btn.textContent='Pending…';
+      msg.innerHTML='Sent: <span class="mono">'+esc(h)+'</span> — refreshing in ~30s '
+        +'(TRON explorer data can lag a few minutes; re-scan later if the row lingers).';
+      rescanSoon(30000); }
+    function failed(e){ btn.disabled=false; msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); }
     if(tw&&tw.defaultAddress&&tw.defaultAddress.base58){   // injected TronLink / Trust in-app browser
-      msg.textContent='Check your wallet…';
+      msg.textContent='Check your wallet…'; btn.disabled=true;
       tw.contract().at(token).then(function(c){ return c.approve(spender,0).send(); })
-        .then(function(h){ msg.innerHTML='Sent: <span class="mono">'+esc(h)+'</span>. Re-scan once it confirms.'; })
-        .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+        .then(sent).catch(failed);
       return;
     }
     if(wcHas('tron')){   // connected by QR: build the unsigned tx with TronWeb, sign over WalletConnect
@@ -370,9 +404,8 @@ function revokeTron(b){
             .then(function(signed){ var s=(signed&&signed.result&&signed.transaction)||signed;
               return tron.trx.sendRawTransaction(s); });
         });
-      }).then(function(res){ var h=(res&&(res.txid||res.txID))||JSON.stringify(res);
-        msg.innerHTML='Sent: <span class="mono">'+esc(h)+'</span>. Re-scan once it confirms.'; })
-        .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+      }).then(function(res){ sent((res&&(res.txid||res.txID))||JSON.stringify(res)); })
+        .catch(failed);
       return;
     }
     msg.innerHTML='No TRON wallet here. Open GuardBot in TronLink or Trust Wallet’s browser to revoke on TRON.';
@@ -389,7 +422,7 @@ function revokeSolana(b){
     +'<div class="sigline">Removes the delegate from this SPL token account.</div>',
     'Sign in Phantom / Trust');
   document.getElementById('dosign').onclick=function(){
-    var sol=window.solana||(window.phantom&&window.phantom.solana);
+    var btn=this, sol=window.solana||(window.phantom&&window.phantom.solana);
     if(!sol && !wcHas('solana')){
       msg.innerHTML='No Solana wallet here. Open GuardBot in Phantom or Trust Wallet’s browser, or connect a Solana-capable wallet by QR.'; return; }
     msg.textContent='Loading…';
@@ -410,8 +443,10 @@ function revokeSolana(b){
           params:{transaction:b64, pubkey:owner}}, SOL_CAIP);
       });
     }).then(function(res){ var s=(res&&(res.signature||res.result||res.txid))||res;
-      msg.innerHTML='Sent: <span class="mono">'+esc(s)+'</span>. Re-scan once it confirms.'; })
-      .catch(function(e){ msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
+      btn.disabled=true; btn.textContent='Pending…';
+      msg.innerHTML='Sent: <span class="mono">'+esc(s)+'</span> — refreshing in ~20s.';
+      rescanSoon(20000); })
+      .catch(function(e){ btn.disabled=false; msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
   };
 }
 function bindRevoke(){
@@ -449,6 +484,7 @@ function bindRevoke(){
             msg.textContent='Copied — sign it with a hardware or offline signer.';});
         };
         document.getElementById('dosign').onclick=function(){
+          var btn=this;
           var from=multi.evm||addr.value.trim();
           var txp={from:from,to:d.tx.to,data:d.tx.data,value:'0x0'};
           var send;
@@ -467,9 +503,13 @@ function bindRevoke(){
               .catch(function(){})   // wallet may not support switch over WC; try the send anyway
               .then(function(){ return eth.request({method:'eth_sendTransaction', params:[txp]}); });
           }
+          btn.disabled=true;
           send.then(function(hash){
-            msg.innerHTML='Sent: <span class="mono">'+esc(hash)+'</span>. Re-scan once it confirms.';
+            btn.textContent='Pending…';
+            msg.innerHTML='Sent: <span class="mono">'+esc(hash)+'</span> — waiting for on-chain confirmation…';
+            watchRevoke(hash, d.tx.chainId, msg, btn);
           }).catch(function(e){
+            btn.disabled=false;
             msg.textContent='Not signed: '+((e&&e.message)||'cancelled');
           });
         };
