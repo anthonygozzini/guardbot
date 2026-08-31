@@ -103,8 +103,21 @@ function setConnected(a){
   f.dispatchEvent(new Event('submit'));
 }
 
+// WalletConnect persists the session in localStorage and auto-restores it on the next init. If
+// the session was ended on the wallet side, that restored session is DEAD, and the page gets
+// stuck on it. For a local tool, reconnecting is trivial, so we wipe the persisted session on
+// disconnect and before every fresh connect — no stale-session state can survive.
+function clearWCStorage(){
+  try{
+    for(var i=localStorage.length-1;i>=0;i--){
+      var k=localStorage.key(i);
+      if(k&&(k.indexOf('wc@2')===0||k.toLowerCase().indexOf('walletconnect')>-1)) localStorage.removeItem(k);
+    }
+  }catch(e){}
+}
 function disconnectWallet(){
   try{ if(wcProvider&&wcProvider.disconnect) wcProvider.disconnect(); }catch(e){}
+  clearWCStorage();
   wcProvider=null; activeProvider=window.ethereum||null; connected=false;
   addr.value=''; wconn.innerHTML=''; connect.textContent='Connect wallet'; connect.disabled=false;
   out.innerHTML='';
@@ -141,6 +154,7 @@ function showPairing(uri){
 }
 function connectWalletConnect(){
   wconn.innerHTML='<div class="status">Starting WalletConnect…</div>';
+  clearWCStorage();   // never restore a possibly-dead session — always a fresh pairing
   import('https://esm.sh/@walletconnect/ethereum-provider@2.13.3').then(function(mod){
     var EP=mod.EthereumProvider||mod.default;
     return EP.init({
