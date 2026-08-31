@@ -18,6 +18,7 @@ Writes: token_registry.json  {chain: {SYMBOL: [[address, native_reserve], ...]}}
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -148,10 +149,12 @@ def mine(chain):
                 data = json.load(f)
         except Exception:
             data = {}
+    collisions = {s: v for s, v in reg.items() if len(v) > 1}
+    # stamp when mined; key is not a valid ticker, so it never collides with a symbol lookup
+    reg["__mined_at__"] = int(time.time())
     data[chain] = reg
     with open(OUT, "w") as f:
         json.dump(data, f)
-    collisions = {s: v for s, v in reg.items() if len(v) > 1}
     print(f"{chain}: {len(symbols)} symbols read, {len(pairs)} priced, "
           f"{len(collisions)} symbols claimed by more than one contract -> {OUT}")
     for s, v in sorted(collisions.items(), key=lambda kv: -int(kv[1][0][1]))[:5]:
