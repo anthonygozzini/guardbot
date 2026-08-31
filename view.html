@@ -260,15 +260,21 @@ function scanMulti(){
   // of a busy EVM wallet is slow (full log history), but the daemon finishes it even if the client
   // times out and stores the result — so the cached paint and the incremental re-scan are instant.
   var slot={}, slow=[], doneLive=0, tick=0;
-  var timer=setInterval(function(){ tick+=5; if(doneLive<addrs.length) paint(false); },5000);
+  function statusText(final){
+    return (final?'':'Scanning your wallets across chains… '+tick+'s · ')
+      +doneLive+'/'+addrs.length+' done'
+      +(slow.length?' · '+slow.length+' timed out (RPC slow)':'')
+      +(final?'':' — free RPCs: the first scan of a busy wallet is slow, re-scans are instant');
+  }
+  // the ticker touches ONLY the counter's text; the table repaints exclusively when a wallet's
+  // result actually lands (re-rendering everything every 5s made the whole page flicker)
+  var timer=setInterval(function(){ tick+=5;
+    var el=document.getElementById('mstat');
+    if(el&&doneLive<addrs.length) el.textContent=statusText(false); },5000);
   function merged(){ return mergeResults(addrs.map(function(a){return slot[a];}).filter(Boolean)); }
   function paint(final){
     var m=merged();
-    var note='<div class="status">'+(final?'':'Scanning your wallets across chains… '+tick+'s · ')
-      +doneLive+'/'+addrs.length+' done'
-      +(slow.length?' · <span style="color:var(--warn)">'+slow.length+' timed out (RPC slow)</span>':'')
-      +(final?'':' <span class="hint" style="display:inline">(free RPCs — first scan of a busy wallet is slow, re-scan is instant)</span>')
-      +'</div>';
+    var note='<div class="status" id="mstat">'+esc(statusText(final))+'</div>';
     if(m.items.length){ render(m,'live'); out.insertAdjacentHTML('afterbegin',note); }
     else out.innerHTML=note;   // don't flash "no approvals ✅" while wallets are still scanning
   }
