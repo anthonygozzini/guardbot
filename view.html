@@ -47,6 +47,7 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--sof
 .wc-ok{margin:12px 0 0;color:var(--accent);font-size:.86rem}
 .wcqr{background:#fff;padding:14px;border-radius:10px;width:max-content;margin:6px auto}
 .wc-deeplink{display:inline-block;padding:8px 14px;border-radius:8px;background:var(--accent);color:#06251a;font-weight:700;text-decoration:none}
+.linkbtn{padding:2px 10px;font-size:.72rem;margin-left:6px;vertical-align:middle}
 .wc-warn{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:#2a1f0f;color:var(--warn);font-size:.84rem;line-height:1.5}
 .tname{color:var(--soft);font-size:.78rem}
 @keyframes pulse{50%{opacity:.45}}
@@ -88,15 +89,32 @@ var CHAIN_IDS={ethereum:1,bsc:56,polygon:137,base:8453,arbitrum:42161,optimism:1
 // QR / deep link, but only if the daemon was started with a (free, public) GUARDBOT_WC_PROJECT_ID.
 // Its 1.4MB SDK is loaded lazily and ONLY then, so the default page stays dependency-free.
 var connect=document.getElementById('connect'), wconn=document.getElementById('wconn');
-var activeProvider=window.ethereum||null, WC_PID='';
+var activeProvider=window.ethereum||null, WC_PID='', wcProvider=null, connected=false;
 try{ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){WC_PID=(c&&c.wc_project_id)||'';}).catch(function(){}); }catch(e){}
 
-function useAccounts(accts){
-  var a=accts&&accts[0];
-  if(!a){wconn.innerHTML='';return;}
-  addr.value=a;
-  wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span> — scanning…</div>';
+// a WalletConnect account can come back CAIP-formatted (eip155:1:0x…) — pull the raw address out
+function normAddr(a){ var m=String(a||'').match(/0x[0-9a-fA-F]{40}/); return m?m[0]:''; }
+
+function setConnected(a){
+  connected=true; addr.value=a; connect.textContent='Connected';
+  wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span> '
+    +'<button id="wcdisc" type="button" class="ghost linkbtn">Disconnect</button></div>';
+  document.getElementById('wcdisc').onclick=disconnectWallet;
   f.dispatchEvent(new Event('submit'));
+}
+
+function disconnectWallet(){
+  try{ if(wcProvider&&wcProvider.disconnect) wcProvider.disconnect(); }catch(e){}
+  wcProvider=null; activeProvider=window.ethereum||null; connected=false;
+  addr.value=''; wconn.innerHTML=''; connect.textContent='Connect wallet'; connect.disabled=false;
+  out.innerHTML='';
+}
+
+function useAccounts(accts){
+  var list=(accts&&accts.length)?accts:((activeProvider&&activeProvider.accounts)||[]);
+  var a=normAddr(list[0]);
+  if(!a){wconn.innerHTML='<div class="wc-warn">Connected, but the wallet returned no address.</div>';return;}
+  setConnected(a);
 }
 
 // The WalletConnect SDK externalizes its deps (bs58, viem, lit…), so a plain UMD <script> can't
@@ -130,14 +148,20 @@ function connectWalletConnect(){
       metadata:{name:'GuardBot',description:'Token approvals & revoke',url:location.origin,icons:[]}
     });
   }).then(function(prov){
-    activeProvider=prov;
+    activeProvider=prov; wcProvider=prov;
     prov.on('display_uri', showPairing);
-    return prov.enable().then(function(accts){ useAccounts(accts); });
+    prov.on('disconnect', function(){ disconnectWallet(); });   // wallet ended the session
+    prov.on('accountsChanged', function(a){ var x=normAddr((a||[])[0]); if(x) setConnected(x); });
+    return prov.enable().then(function(accts){
+      if(accts&&accts.length){ useAccounts(accts); return; }
+      return prov.request({method:'eth_accounts'}).then(useAccounts);   // some wallets need this
+    });
   }).catch(function(e){
     wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
   });
 }
 connect.addEventListener('click',function(){
+  if(connected){ f.dispatchEvent(new Event('submit')); return; }   // already connected → re-scan
   if(window.ethereum){
     activeProvider=window.ethereum;
     connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
