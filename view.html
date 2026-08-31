@@ -41,6 +41,7 @@ button.rev:hover{border-color:var(--risk);color:var(--risk)}
 word-break:break-all;color:var(--faint);max-height:88px;overflow:auto}
 .sigacts{display:flex;gap:9px;margin-top:6px}
 button.ghost{background:transparent;border:1px solid var(--line);color:var(--soft)}
+button.danger{background:var(--risk);color:#2c0f0c}
 .simrow{margin:9px 0;padding:8px 10px;border-radius:8px;font-size:.82rem;font-weight:600}
 .simok{background:#0d2a20;color:var(--accent)}
 .simwarn{background:#2a1f0f;color:var(--warn)}
@@ -71,7 +72,7 @@ a{color:var(--accent)}
   <p class="sub">Paste any address, see its standing token approvals across <b>EVM · TRON · Solana</b> — the chains a single revoke tool usually doesn't unify. Read-only, no wallet needed.</p>
   <form id="f" onsubmit="return false">
     <input id="addr" placeholder="0x… (EVM)  ·  T… (TRON)  ·  base58 (Solana)" autocomplete="off" spellcheck="false">
-    <button id="connect" type="button" class="ghost">Connect wallet</button>
+    <button id="connect" type="button">Connect wallet</button>
     <button id="go" type="submit">Scan</button>
   </form>
   <p class="hint">Paste an address, or connect a wallet to use its own. Chain auto-detected. On a
@@ -95,11 +96,11 @@ try{ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){WC
 // a WalletConnect account can come back CAIP-formatted (eip155:1:0x…) — pull the raw address out
 function normAddr(a){ var m=String(a||'').match(/0x[0-9a-fA-F]{40}/); return m?m[0]:''; }
 
-function setConnected(a){
-  connected=true; addr.value=a; connect.textContent='Connected';
-  wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span> '
-    +'<button id="wcdisc" type="button" class="ghost linkbtn">Disconnect</button></div>';
-  document.getElementById('wcdisc').onclick=disconnectWallet;
+function setConnected(a, how){
+  connected=true; addr.value=a; connect.disabled=false;
+  connect.textContent='Disconnect'; connect.classList.add('danger');   // one button: red = disconnect
+  wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span>'
+    +(how?' · <span class="hint" style="margin:0">'+esc(how)+'</span>':'')+'</div>';
   runScan();
 }
 
@@ -119,15 +120,15 @@ function disconnectWallet(){
   try{ if(wcProvider&&wcProvider.disconnect) wcProvider.disconnect(); }catch(e){}
   clearWCStorage();
   wcProvider=null; activeProvider=window.ethereum||null; connected=false;
-  addr.value=''; wconn.innerHTML=''; connect.textContent='Connect wallet'; connect.disabled=false;
-  out.innerHTML='';
+  addr.value=''; wconn.innerHTML=''; out.innerHTML='';
+  connect.textContent='Connect wallet'; connect.classList.remove('danger'); connect.disabled=false;
 }
 
-function useAccounts(accts){
+function useAccounts(accts, how){
   var list=(accts&&accts.length)?accts:((activeProvider&&activeProvider.accounts)||[]);
   var a=normAddr(list[0]);
   if(!a){wconn.innerHTML='<div class="wc-warn">Connected, but the wallet returned no address.</div>';return;}
-  setConnected(a);
+  setConnected(a, how);
 }
 
 // The WalletConnect SDK externalizes its deps (bs58, viem, lit…), so a plain UMD <script> can't
@@ -165,22 +166,26 @@ function connectWalletConnect(){
     activeProvider=prov; wcProvider=prov;
     prov.on('display_uri', showPairing);
     prov.on('disconnect', function(){ disconnectWallet(); });   // wallet ended the session
-    prov.on('accountsChanged', function(a){ var x=normAddr((a||[])[0]); if(x) setConnected(x); });
-    return prov.enable().then(function(accts){
-      if(accts&&accts.length){ useAccounts(accts); return; }
-      return prov.request({method:'eth_accounts'}).then(useAccounts);   // some wallets need this
+    prov.on('accountsChanged', function(a){ var x=normAddr((a||[])[0]); if(x) setConnected(x,'via WalletConnect'); });
+    // if init still restored a (possibly-dead) session, kill it so enable() forces a fresh QR
+    var stale=(prov.accounts&&prov.accounts.length)?Promise.resolve(prov.disconnect()).catch(function(){}):Promise.resolve();
+    return stale.then(function(){
+      return prov.enable().then(function(accts){
+        if(accts&&accts.length){ useAccounts(accts,'via WalletConnect'); return; }
+        return prov.request({method:'eth_accounts'}).then(function(x){ useAccounts(x,'via WalletConnect'); });
+      });
     });
   }).catch(function(e){
     wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
   });
 }
 connect.addEventListener('click',function(){
-  if(connected){ runScan(); return; }   // already connected → re-scan
+  if(connected){ disconnectWallet(); return; }   // the button is red "Disconnect" now
   if(window.ethereum){
     activeProvider=window.ethereum;
     connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
     window.ethereum.request({method:'eth_requestAccounts'}).then(function(accts){
-      connect.disabled=false; useAccounts(accts);
+      connect.disabled=false; useAccounts(accts,'via browser wallet');
     }).catch(function(e){
       connect.disabled=false;
       wconn.innerHTML='<div class="wc-warn">Not connected: '+esc((e&&e.message)||'cancelled')+'</div>';
