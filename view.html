@@ -104,24 +104,18 @@ function setConnected(a, how){
   runScan();
 }
 
-// WalletConnect persists the session in localStorage and auto-restores it on the next init. If
-// the session was ended on the wallet side, that restored session is DEAD, and the page gets
-// stuck on it. For a local tool, reconnecting is trivial, so we wipe the persisted session on
-// disconnect and before every fresh connect — no stale-session state can survive.
-function clearWCStorage(){
-  try{
-    for(var i=localStorage.length-1;i>=0;i--){
-      var k=localStorage.key(i);
-      if(k&&(k.indexOf('wc@2')===0||k.toLowerCase().indexOf('walletconnect')>-1)) localStorage.removeItem(k);
-    }
-  }catch(e){}
-}
-function disconnectWallet(){
-  try{ if(wcProvider&&wcProvider.disconnect) wcProvider.disconnect(); }catch(e){}
-  clearWCStorage();
-  wcProvider=null; activeProvider=window.ethereum||null; connected=false;
+// WalletConnect's Core is a singleton: init() must run ONCE per page. Calling it on every connect
+// gave "Core is already initialized" and left proposals mismatched; wiping its localStorage while
+// it was live gave "No matching key". So we init once (wcInit, cached), reuse the provider, and
+// end sessions the SDK's own way with disconnect() — never by nuking storage under it.
+function resetWalletUI(){
+  activeProvider=window.ethereum||null; connected=false;
   addr.value=''; wconn.innerHTML=''; out.innerHTML='';
   connect.textContent='Connect wallet'; connect.classList.remove('danger'); connect.disabled=false;
+}
+function disconnectWallet(){
+  if(wcProvider){ try{ Promise.resolve(wcProvider.disconnect()).catch(function(){}); }catch(e){} }
+  resetWalletUI();
 }
 
 function useAccounts(accts, how){
@@ -153,26 +147,33 @@ function showPairing(uri){
     .then(function(){ new QRCode(document.getElementById('wcqr'),{text:uri,width:224,height:224}); })
     .catch(function(){ document.getElementById('wcqr').innerHTML='<div class="mono" style="word-break:break-all;font-size:.7rem">'+esc(uri)+'</div>'; });
 }
-function connectWalletConnect(){
-  wconn.innerHTML='<div class="status">Starting WalletConnect…</div>';
-  clearWCStorage();   // never restore a possibly-dead session — always a fresh pairing
-  import('https://esm.sh/@walletconnect/ethereum-provider@2.21.0').then(function(mod){
+var wcInit=null;
+function getWCProvider(){
+  if(wcInit) return wcInit;   // init the singleton Core exactly once
+  wcInit=import('https://esm.sh/@walletconnect/ethereum-provider@2.21.0').then(function(mod){
     var EP=mod.EthereumProvider||mod.default;
     return EP.init({
       projectId:WC_PID, chains:[1], optionalChains:[56,137,8453,42161,10], showQrModal:false,
       metadata:{name:'GuardBot',description:'Token approvals & revoke',url:location.origin,icons:[]}
     });
   }).then(function(prov){
-    activeProvider=prov; wcProvider=prov;
     prov.on('display_uri', showPairing);
-    prov.on('disconnect', function(){ disconnectWallet(); });   // wallet ended the session
+    prov.on('disconnect', function(){ if(connected) resetWalletUI(); });   // wallet ended it
     prov.on('accountsChanged', function(a){ var x=normAddr((a||[])[0]); if(x) setConnected(x,'via WalletConnect'); });
-    // if init still restored a (possibly-dead) session, kill it so enable() forces a fresh QR
-    var stale=(prov.accounts&&prov.accounts.length)?Promise.resolve(prov.disconnect()).catch(function(){}):Promise.resolve();
-    return stale.then(function(){
+    return prov;
+  });
+  return wcInit;
+}
+function connectWalletConnect(){
+  wconn.innerHTML='<div class="status">Starting WalletConnect…</div>';
+  getWCProvider().then(function(prov){
+    activeProvider=prov; wcProvider=prov;
+    // a restored session may be dead (ended on the wallet) — end it cleanly, then pair fresh
+    var live=prov.session||(prov.accounts&&prov.accounts.length);
+    var pre=live?Promise.resolve(prov.disconnect()).catch(function(){}):Promise.resolve();
+    return pre.then(function(){
       return prov.enable().then(function(accts){
-        if(accts&&accts.length){ useAccounts(accts,'via WalletConnect'); return; }
-        return prov.request({method:'eth_accounts'}).then(function(x){ useAccounts(x,'via WalletConnect'); });
+        useAccounts((accts&&accts.length)?accts:(prov.accounts||[]),'via WalletConnect');
       });
     });
   }).catch(function(e){
