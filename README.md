@@ -37,6 +37,15 @@ Point an agent at it as an **MCP tool** (Claude Desktop / Claude Code / VibeKit)
 ```
 It exposes `check_token(chain, address)` and `check_approvals(address)`.
 
+**Connect a wallet** (to skip pasting an address, and to sign revokes): the viewer uses your
+injected wallet — a desktop extension, or your wallet's in-app browser on mobile (Trust Wallet,
+MetaMask, Rabby) — with nothing to install. To connect *any* mobile wallet by QR from a normal
+browser, start the daemon with a free WalletConnect projectId (its SDK then loads lazily, only
+when used, so the default page stays dependency-free):
+```bash
+GUARDBOT_WC_PROJECT_ID=<your id from cloud.reown.com> python3 guardd.py
+```
+
 Data ages, so once in a while: `python3 tools/refresh.py` re-mines everything from the chain.
 
 GuardBot does both sides of safety:

@@ -293,6 +293,11 @@ class H(BaseHTTPRequestHandler):
                     self._json(200, tokencheck.check_token(chain, token))
             except Exception as e:
                 self._json(500, {"error": f"token check failed: {e}"})
+        elif u.path == "/v1/config":
+            # Frontend config. The WalletConnect projectId is a PUBLIC frontend identifier (safe
+            # to expose); it's read from env so no account detail is baked into the code. Empty =
+            # WalletConnect stays off and the viewer uses injected wallets only.
+            self._json(200, {"wc_project_id": os.environ.get("GUARDBOT_WC_PROJECT_ID", "")})
         elif u.path == "/v1/revoke":
             # Builds the revoking calldata only. Nothing is signed or broadcast server-side:
             # the wallet does that, so this endpoint can never move anyone's funds.

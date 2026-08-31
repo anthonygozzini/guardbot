@@ -80,32 +80,64 @@ a{color:var(--accent)}
 var f=document.getElementById('f'),addr=document.getElementById('addr'),go=document.getElementById('go'),out=document.getElementById('out');
 var CHAIN_IDS={ethereum:1,bsc:56,polygon:137,base:8453,arbitrum:42161,optimism:10};
 
-// Connect a wallet so you don't have to paste an address. window.ethereum is injected by desktop
-// extensions AND by every wallet's in-app browser (Trust Wallet, MetaMask, Rabby on mobile), so
-// this one path covers both without any SDK, projectId, or third-party relay. From plain mobile
-// Chrome there is no injected wallet — the hint tells you to open the page in the wallet's browser.
+// The wallet the page will talk to. window.ethereum (injected by desktop extensions AND every
+// wallet's in-app browser) is the default and needs nothing extra. When there is no injected
+// wallet — plain mobile/desktop Chrome — WalletConnect can bridge to any of the top wallets via a
+// QR / deep link, but only if the daemon was started with a (free, public) GUARDBOT_WC_PROJECT_ID.
+// Its 1.4MB SDK is loaded lazily and ONLY then, so the default page stays dependency-free.
 var connect=document.getElementById('connect'), wconn=document.getElementById('wconn');
+var activeProvider=window.ethereum||null, WC_PID='';
+try{ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){WC_PID=(c&&c.wc_project_id)||'';}).catch(function(){}); }catch(e){}
+
+function useAccounts(accts){
+  var a=accts&&accts[0];
+  if(!a){wconn.innerHTML='';return;}
+  addr.value=a;
+  wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span> — scanning…</div>';
+  f.dispatchEvent(new Event('submit'));
+}
+
+var _wcLoading;
+function loadScript(src){
+  return _wcLoading||(_wcLoading=new Promise(function(res,rej){
+    var s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=function(){rej(new Error('failed to load WalletConnect'));};
+    document.head.appendChild(s);
+  }));
+}
+function connectWalletConnect(){
+  wconn.innerHTML='<div class="status">Loading WalletConnect…</div>';
+  loadScript('https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2.24.0/dist/index.umd.js')
+   .then(function(){
+     return window.EthereumProvider.init({
+       projectId:WC_PID, chains:[1],
+       optionalChains:[56,137,8453,42161,10], showQrModal:true,
+       metadata:{name:'GuardBot',description:'Approvals & revoke',url:location.origin,icons:[]}
+     });
+   }).then(function(prov){
+     activeProvider=prov;
+     wconn.innerHTML='<div class="status">Scan the QR with your wallet…</div>';
+     return prov.enable().then(function(accts){ useAccounts(accts); });
+   }).catch(function(e){
+     wconn.innerHTML='<div class="wc-warn">WalletConnect failed: '+esc((e&&e.message)||'error')+'</div>';
+   });
+}
 connect.addEventListener('click',function(){
-  var eth=window.ethereum;
-  if(!eth){
-    wconn.innerHTML='<div class="wc-warn">No wallet in this browser. On a phone, open '
-      +'<b>127.0.0.1:8403/view</b> (or your machine’s LAN address) inside your wallet’s built-in '
-      +'browser — Trust Wallet, MetaMask and Rabby all have one — and tap Connect again. '
-      +'On desktop, install a wallet extension.</div>';
+  if(window.ethereum){
+    activeProvider=window.ethereum;
+    connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
+    window.ethereum.request({method:'eth_requestAccounts'}).then(function(accts){
+      connect.disabled=false; useAccounts(accts);
+    }).catch(function(e){
+      connect.disabled=false;
+      wconn.innerHTML='<div class="wc-warn">Not connected: '+esc((e&&e.message)||'cancelled')+'</div>';
+    });
     return;
   }
-  connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
-  eth.request({method:'eth_requestAccounts'}).then(function(accts){
-    connect.disabled=false;
-    var a=accts&&accts[0];
-    if(!a){wconn.innerHTML='';return;}
-    addr.value=a;
-    wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span> — scanning…</div>';
-    f.dispatchEvent(new Event('submit'));
-  }).catch(function(e){
-    connect.disabled=false;
-    wconn.innerHTML='<div class="wc-warn">Not connected: '+esc((e&&e.message)||'cancelled')+'</div>';
-  });
+  if(WC_PID){ connectWalletConnect(); return; }
+  wconn.innerHTML='<div class="wc-warn">No wallet in this browser. Open this page inside your '
+    +'wallet’s built-in browser (Trust Wallet, MetaMask, Rabby), or install a wallet extension. '
+    +'To connect any mobile wallet by QR from a normal browser, start the daemon with a free '
+    +'<b>GUARDBOT_WC_PROJECT_ID</b> (WalletConnect Cloud).</div>';
 });
 
 // Revoking is the one thing here that writes. The rules are deliberate: the calldata is built
@@ -145,10 +177,10 @@ function bindRevoke(){
             msg.textContent='Copied — sign it with a hardware or offline signer.';});
         };
         document.getElementById('dosign').onclick=function(){
-          var eth=window.ethereum;
-          if(!eth){msg.innerHTML='No wallet in this browser. On a phone, open this page inside your '
-            +'wallet’s browser (Trust Wallet / MetaMask / Rabby) and try again — or use <b>Copy '
-            +'calldata</b> and sign it in a hardware or offline signer.';return;}
+          var eth=activeProvider||window.ethereum;   // injected, or a WalletConnect session
+          if(!eth){msg.innerHTML='No wallet connected. Tap <b>Connect wallet</b> above first '
+            +'(in your wallet’s browser, or via WalletConnect), or use <b>Copy calldata</b> and '
+            +'sign it in a hardware or offline signer.';return;}
           msg.textContent='Check your wallet…';
           eth.request({method:'eth_requestAccounts'}).then(function(accts){
             return eth.request({method:'wallet_switchEthereumChain',
