@@ -69,7 +69,7 @@ a{color:var(--accent)}
 <body><div class="wrap">
   <h1>⚡ GuardBot — Approvals Viewer</h1>
   <p class="sub">Paste any address, see its standing token approvals across <b>EVM · TRON · Solana</b> — the chains a single revoke tool usually doesn't unify. Read-only, no wallet needed.</p>
-  <form id="f">
+  <form id="f" onsubmit="return false">
     <input id="addr" placeholder="0x… (EVM)  ·  T… (TRON)  ·  base58 (Solana)" autocomplete="off" spellcheck="false">
     <button id="connect" type="button" class="ghost">Connect wallet</button>
     <button id="go" type="submit">Scan</button>
@@ -100,7 +100,7 @@ function setConnected(a){
   wconn.innerHTML='<div class="wc-ok">Connected <span class="mono">'+esc(short(a))+'</span> '
     +'<button id="wcdisc" type="button" class="ghost linkbtn">Disconnect</button></div>';
   document.getElementById('wcdisc').onclick=disconnectWallet;
-  f.dispatchEvent(new Event('submit'));
+  runScan();
 }
 
 // WalletConnect persists the session in localStorage and auto-restores it on the next init. If
@@ -175,7 +175,7 @@ function connectWalletConnect(){
   });
 }
 connect.addEventListener('click',function(){
-  if(connected){ f.dispatchEvent(new Event('submit')); return; }   // already connected → re-scan
+  if(connected){ runScan(); return; }   // already connected → re-scan
   if(window.ethereum){
     activeProvider=window.ethereum;
     connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
@@ -327,8 +327,10 @@ function render(d,mode){
     +'<div id="sign"></div>';
   bindRevoke();
 }
-f.addEventListener('submit',function(e){
-  e.preventDefault();
+// runScan is called DIRECTLY (never by dispatching a synthetic 'submit'). Dispatching a submit
+// event isn't cancelable, so preventDefault() didn't stop the browser's native GET submission —
+// the page kept reloading to /view? every scan, and the wallet state never settled.
+function runScan(){
   var a=addr.value.trim(); if(!a)return;
   go.disabled=true; out.innerHTML='<div class="status">Scanning…</div>';
   function live(){
@@ -336,11 +338,11 @@ f.addEventListener('submit',function(e){
       go.disabled=false; render(d,'live');
     }).catch(function(err){go.disabled=false;out.innerHTML='<div class="err">Request failed: '+esc(err.message)+'. Is the server running?</div>';});
   }
-  // phase 1 — instant paint from the local index (µs); may be empty on a first-ever look-up
   fetch('/v1/approvals?cached=1&address='+encodeURIComponent(a)).then(function(r){return r.json();}).then(function(d){
     if(d&&!d.error&&d.items&&d.items.length) render(d,'cached');
     live();
   }).catch(live);
-});
+}
+f.addEventListener('submit',function(e){ e.preventDefault(); runScan(); return false; });
 </script>
 </body></html>
