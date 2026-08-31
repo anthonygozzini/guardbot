@@ -78,7 +78,8 @@ EVM_CFG = {
     "bsc": {"id": "56", "rpcs": ["https://bsc-dataseed.binance.org",
                                  "https://bsc-rpc.publicnode.com",
                                  "https://56.rpc.thirdweb.com"]},
-    "base": {"id": "8453", "rpcs": ["https://mainnet.base.org", "https://base.drpc.org"]},
+    "base": {"id": "8453", "rpcs": ["https://base-rpc.publicnode.com", "https://8453.rpc.thirdweb.com",
+                                    "https://base-mainnet.public.blastapi.io", "https://mainnet.base.org"]},
     "arbitrum": {"id": "42161", "rpcs": ["https://arb1.arbitrum.io/rpc",
                                          "https://arbitrum-one-rpc.publicnode.com"]},
     "polygon": {"id": "137", "rpcs": ["https://polygon-bor-rpc.publicnode.com",
@@ -757,6 +758,46 @@ def _probe_permit2(rpc, owner, pairs):
     return {p for p, v in _mc_generic(rpc, pairs, call).items() if v > 0}
 
 
+def _abi_string(hexdata):
+    """Decode an ABI-encoded string return (offset+length+bytes), tolerating junk."""
+    try:
+        b = bytes.fromhex((hexdata or "0x")[2:])
+        if len(b) < 64:
+            return None
+        ln = int.from_bytes(b[32:64], "big")
+        if ln == 0 or 64 + ln > len(b):
+            return None
+        return b[64:64 + ln].split(b"\x00")[0].decode("utf-8", "ignore").strip() or None
+    except Exception:
+        return None
+
+
+def _batch_strings(name, tokens, sel):
+    """symbol()/name() for many tokens in as few Multicall3 requests as possible → {token: str}.
+    One request per PROBE_BATCH instead of one eth_call each — the fix for '—' on rate-limited
+    RPCs — and it ROTATES across the chain's RPCs until one answers, since a single public node
+    (Base's) 429s constantly. allowFailure is set, so a token missing the method yields None."""
+    rpcs = (EVM_CFG.get(name) or {}).get("rpcs") or []
+    if not rpcs:
+        return {t: None for t in tokens}
+    out = {t: None for t in tokens}
+    for i in range(0, len(tokens), PROBE_BATCH):
+        chunk = tokens[i:i + PROBE_BATCH]
+        data = _enc_aggregate3([(t, True, sel) for t in chunk])
+        for u in rpcs:                          # try each RPC until the batch comes back
+            try:
+                r = _rpc(u, "eth_call", [{"to": MULTICALL3, "data": data}, "latest"])
+                dec = _dec_aggregate3(r) if r and r != "0x" else []
+            except Exception:
+                dec = []
+            if dec:
+                for t, (ok, val) in zip(chunk, dec):
+                    if ok:
+                        out[t] = _abi_string(val)
+                break
+    return out
+
+
 def _permit2_allowance(rpc, owner, token, spender):
     """Permit2.allowance(user, token, spender) -> (amount uint160, expiration uint48, nonce).
     This is the exposure the plain ERC-20 view cannot see: approving Permit2 only opens the
@@ -777,25 +818,18 @@ def _resolve_pairs(rpc, name, owner, pairs):
     (skip); this is the current on-chain truth, re-checked every scan even when pairs are cached."""
     if not pairs:
         return []
-    sym_cache, name_cache, sym_lock = {}, {}, threading.Lock()
+    # symbol()/name() were one eth_call PER token — on a rate-limited RPC (Base's public nodes
+    # 429 constantly) most of them failed and the token showed as "—". Read them all in ONE
+    # Multicall3 batch instead: a single request for every symbol, one for every name.
+    tokens = sorted({t for _k, t, _s in pairs})
+    sym_cache = _batch_strings(name, tokens, "0x95d89b41")   # symbol()
+    name_cache = _batch_strings(name, tokens, "0x06fdde03")  # name()
 
     def symbol(token):
-        with sym_lock:
-            if token in sym_cache:
-                return sym_cache[token]
-        s = _symbol(rpc, token)
-        with sym_lock:
-            sym_cache[token] = s
-        return s
+        return sym_cache.get(token)
 
     def tname(token):
-        with sym_lock:
-            if token in name_cache:
-                return name_cache[token]
-        s = _name(rpc, token)
-        with sym_lock:
-            name_cache[token] = s
-        return s
+        return name_cache.get(token)
 
     def resolve(grant):
         kind, token, spender = grant
