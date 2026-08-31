@@ -256,35 +256,47 @@ function scanMulti(){
   var addrs=[multi.evm,multi.solana,multi.tron].filter(Boolean);
   if(!addrs.length) return;
   go.disabled=true;
-  // each wallet is scanned independently and BOUNDED: a stuck free-RPC can't hang the whole view,
-  // and results paint as they land — EVM first, the slower chains fill in — so it never freezes.
-  var acc=[], slow=[], done=0, tick=0;
-  var timer=setInterval(function(){ tick+=5; if(done<addrs.length) paint(); },5000);
-  function paint(){
-    var note='<div class="status">Scanning your wallets across chains… '+tick+'s · '
-      +done+'/'+addrs.length+' done'
+  // Each wallet is scanned independently, cached-first then live, and BOUNDED. The FIRST full scan
+  // of a busy EVM wallet is slow (full log history), but the daemon finishes it even if the client
+  // times out and stores the result — so the cached paint and the incremental re-scan are instant.
+  var slot={}, slow=[], doneLive=0, tick=0;
+  var timer=setInterval(function(){ tick+=5; if(doneLive<addrs.length) paint(false); },5000);
+  function merged(){ return mergeResults(addrs.map(function(a){return slot[a];}).filter(Boolean)); }
+  function paint(final){
+    var m=merged();
+    var note='<div class="status">'+(final?'':'Scanning your wallets across chains… '+tick+'s · ')
+      +doneLive+'/'+addrs.length+' done'
       +(slow.length?' · <span style="color:var(--warn)">'+slow.length+' timed out (RPC slow)</span>':'')
-      +' <span class="hint" style="display:inline">(free public RPCs, can be slow)</span></div>';
-    var merged=mergeResults(acc);
-    if(merged.items.length){ render(merged,'live'); out.insertAdjacentHTML('afterbegin',note); }
-    else out.innerHTML=note;   // don't flash "no approvals ✅" while other wallets are still scanning
+      +(final?'':' <span class="hint" style="display:inline">(free RPCs — first scan of a busy wallet is slow, re-scan is instant)</span>')
+      +'</div>';
+    if(m.items.length){ render(m,'live'); out.insertAdjacentHTML('afterbegin',note); }
+    else out.innerHTML=note;   // don't flash "no approvals ✅" while wallets are still scanning
   }
-  function finish(){ clearInterval(timer); go.disabled=false;
-    render(mergeResults(acc),'live');
-    if(slow.length) out.insertAdjacentHTML('afterbegin',
-      '<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
-      +esc(slow.length+' wallet'+(slow.length>1?'s':'')+' timed out on the free RPCs and '+(slow.length>1?'were':'was')
-      +' skipped — tap Scan to retry')+'</div>'); }
+  function finish(){
+    clearInterval(timer); go.disabled=false;
+    var m=merged(), warn=slow.length
+      ? '<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '
+        +esc(slow.length+' wallet'+(slow.length>1?'s':'')+' didn’t finish the first full scan within 150s on '
+        +'the free public RPCs. It keeps finishing in the background and is stored — tap Scan again in ~30s '
+        +'for the instant result. This is NOT a clean bill for '+(slow.length>1?'those wallets':'that wallet')+'.')+'</div>'
+      : '';
+    if(!m.items.length && slow.length){ out.innerHTML=warn; return; }   // never a false "no approvals ✅"
+    paint(true);
+    if(warn) out.insertAdjacentHTML('afterbegin',warn);
+  }
   addrs.forEach(function(a){
+    fetch('/v1/approvals?cached=1&address='+encodeURIComponent(a)).then(function(r){return r.json();})
+      .then(function(d){ if(d&&!d.error&&d.items&&d.items.length&&!slot[a]){ slot[a]=d; paint(false); } })
+      .catch(function(){});
     var ctl=('AbortController' in window)?new AbortController():null;
-    var to=setTimeout(function(){ if(ctl) ctl.abort(); },110000);
+    var to=setTimeout(function(){ if(ctl) ctl.abort(); },150000);
     fetch('/v1/approvals?address='+encodeURIComponent(a), ctl?{signal:ctl.signal}:{})
       .then(function(r){return r.json();})
-      .then(function(d){ clearTimeout(to); if(d&&!d.error&&d.items) acc.push(d); else slow.push(a); })
-      .catch(function(){ clearTimeout(to); slow.push(a); })
-      .then(function(){ done++; if(done>=addrs.length) finish(); else paint(); });
+      .then(function(d){ clearTimeout(to); if(d&&!d.error&&d.items){ slot[a]=d; } else if(!slot[a]){ slow.push(a); } })
+      .catch(function(){ clearTimeout(to); if(!slot[a]) slow.push(a); })
+      .then(function(){ doneLive++; if(doneLive>=addrs.length) finish(); else paint(false); });
   });
-  paint();
+  paint(false);
 }
 connect.addEventListener('click',function(){
   if(connected){ disconnectWallet(); return; }   // the button is red "Disconnect" now
