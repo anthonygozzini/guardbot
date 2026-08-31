@@ -156,7 +156,7 @@ function showPairing(uri){
 function connectWalletConnect(){
   wconn.innerHTML='<div class="status">Starting WalletConnect…</div>';
   clearWCStorage();   // never restore a possibly-dead session — always a fresh pairing
-  import('https://esm.sh/@walletconnect/ethereum-provider@2.13.3').then(function(mod){
+  import('https://esm.sh/@walletconnect/ethereum-provider@2.21.0').then(function(mod){
     var EP=mod.EthereumProvider||mod.default;
     return EP.init({
       projectId:WC_PID, chains:[1], optionalChains:[56,137,8453,42161,10], showQrModal:false,
@@ -241,13 +241,16 @@ function bindRevoke(){
             +'(in your wallet’s browser, or via WalletConnect), or use <b>Copy calldata</b> and '
             +'sign it in a hardware or offline signer.';return;}
           msg.textContent='Check your wallet…';
-          eth.request({method:'eth_requestAccounts'}).then(function(accts){
-            return eth.request({method:'wallet_switchEthereumChain',
-                                params:[{chainId:d.tx.chainId}]})
-              .catch(function(e){ if(e && e.code===4902){throw new Error('Add the '+d.chain+' network to your wallet first.');} throw e; })
+          // use the already-connected account — re-requesting accounts on a live WalletConnect
+          // session can pop a fresh pairing page instead of the transaction
+          var from=addr.value.trim();
+          var acct=from?Promise.resolve(from):eth.request({method:'eth_requestAccounts'}).then(function(a){return a[0];});
+          acct.then(function(from){
+            return eth.request({method:'wallet_switchEthereumChain', params:[{chainId:d.tx.chainId}]})
+              .catch(function(){})   // wallet may not support switch over WC; try the send anyway
               .then(function(){
                 return eth.request({method:'eth_sendTransaction',
-                  params:[{from:accts[0],to:d.tx.to,data:d.tx.data,value:'0x0'}]});
+                  params:[{from:from,to:d.tx.to,data:d.tx.data,value:'0x0',chainId:d.tx.chainId}]});
               });
           }).then(function(hash){
             msg.innerHTML='Sent: <span class="mono">'+esc(hash)+'</span>. Re-scan once it confirms.';
