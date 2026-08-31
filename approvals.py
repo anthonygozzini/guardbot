@@ -66,6 +66,23 @@ ETHERSCAN_KEY = os.environ.get("GUARDBOT_ETHERSCAN_KEY", "")
 # request falls through to our own scanner. Gating on the key alone quietly launched four
 # full-history sweeps on chains it never covered.
 ETHERSCAN_FREE_CHAINS = {"ethereum", "arbitrum", "polygon"}
+
+# Etherscan free allows 5 req/s for the WHOLE process, but 4 event families × N chains fire their
+# getLogs together: the burst tripped the limiter, every retry failed too, and the chain fell back
+# to the windowed RPC scanner — surfacing as "partial" on chains that have full history available.
+# One shared gate spaces calls to ~4/s (threshold = ×0.8 of Etherscan's own published limit).
+_ESCAN_LOCK = threading.Lock()
+_ESCAN_NEXT = [0.0]
+
+
+def _escan_gate():
+    with _ESCAN_LOCK:
+        now = time.time()
+        wait = _ESCAN_NEXT[0] - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.time()
+        _ESCAN_NEXT[0] = now + 0.26
 # No keyed RPC provider. Everything runs on free public RPCs — proven to give the same result as
 # a keyed setup (see README), so there is nothing to rate-limit, pay for, or leak. eth_call
 # (allowance/symbol/name/nonce/Multicall3) goes to the public endpoints below.
@@ -455,6 +472,7 @@ def _approval_logs(name, cfg, owner_topic, owner, from_block=0, nonce_checked=Fa
                + (f"&address={address}" if address else ""))
         for _ in range(4):
             try:
+                _escan_gate()
                 d = _get(url)
             except Exception:
                 time.sleep(0.7)
@@ -826,7 +844,9 @@ def _resolve_pairs(rpc, name, owner, pairs):
     name_cache = _batch_strings(name, tokens, "0x06fdde03")  # name()
 
     def symbol(token):
-        return sym_cache.get(token)
+        # last resort is the locally mined registry (zero network): when every RPC read fails,
+        # a top-liquidity token like USDC must still get its ticker, never a "—".
+        return sym_cache.get(token) or _registry_symbol(name, token)
 
     def tname(token):
         return name_cache.get(token)
@@ -1204,6 +1224,25 @@ def _spender_trust(chain, spender, hints=None):
 
 
 _REGISTRY = None
+_REGSYM = {}
+
+
+def _registry_symbol(chain, token):
+    """address → ticker from the locally mined registry. Reverse of the impersonation lookup;
+    costs zero network calls, so it works even when every RPC on the chain is refusing reads."""
+    m = _REGSYM.get(chain)
+    if m is None:
+        m = {}
+        for s, entries in _registry(chain).items():
+            if s.startswith("__"):
+                continue
+            for e in entries:
+                try:
+                    m.setdefault(str(e[0]).lower(), s)
+                except Exception:
+                    pass
+        _REGSYM[chain] = m
+    return m.get(str(token).lower())
 
 
 def _registry(chain):
