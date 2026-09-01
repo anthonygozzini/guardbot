@@ -75,6 +75,13 @@ the injected `window.tronWeb` (TronLink / Trust) building `approve(spender, 0)`,
 (built with `@solana/web3.js`, loaded lazily). Open the page in the wallet's in-app browser and the
 right provider is there.
 
+All three are proven the same way before you sign, at zero cost: the EVM calldata runs under
+`eth_simulateV1`, the Solana `Revoke` instruction under `simulateTransaction`, the TRC-20
+`approve(spender, 0)` under TronGrid's `triggerconstantcontract` — each against the live grant,
+and the page shows "✓ simulated" only when the node actually executed it. What this proves is
+the instruction. Wallet-side signing of Solana and TRON revokes is **unverified** until a real
+signature goes through; the EVM path has been signed and confirmed on-chain.
+
 One non-obvious thing it gets right: **zeroing the ERC-20 approval to Permit2 does not clear the
 grants already inside Permit2**. Those live in Permit2's own books until they expire, and must be
 zeroed there — the blind spot this tool found in reading, closed in writing.

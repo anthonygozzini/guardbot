@@ -360,6 +360,14 @@ function watchRevoke(hash, chainIdHex, msg, btn){
     }).catch(function(){});
   },4000);
 }
+function simRow(sm){
+  if(!sm) return '<div class="simrow simwarn">⚠ couldn’t reach the simulation — the revoke is still correct, its effect just isn’t proven here</div>';
+  if(!sm.simulated) return '<div class="simrow simwarn">⚠ '+esc(sm.note||'couldn’t simulate on this RPC')+'</div>';
+  return (sm.works
+    ? '<div class="simrow simok">✓ simulated on-chain: this revoke executes for this account (no gas spent)</div>'
+    : '<div class="simrow simwarn">⚠ simulation did not succeed'+(sm.error?': '+esc(sm.error):'')+' — check before signing</div>')
+    +(sm.note?'<div class="hint" style="margin:2px 0 0">'+esc(sm.note)+'</div>':'');
+}
 var _sigbox;
 function sigbox(head, lines, btnLabel){
   _sigbox.innerHTML='<div class="signbox"><div class="signhead">'+esc(head)+'</div>'+lines
@@ -369,11 +377,15 @@ function sigbox(head, lines, btnLabel){
 }
 // TRON: TronLink / Trust inject window.tronWeb, which builds AND signs approve(spender,0) itself.
 function revokeTron(b){
-  var token=b.dataset.token, spender=b.dataset.spender;
+  var token=b.dataset.token, spender=b.dataset.spender, owner=multi.tron||addr.value.trim();
+  _sigbox.innerHTML='<div class="status">Simulating the revoke on-chain…</div>';
+  fetch('/v1/revoke?chain=tron&kind=approval&token='+encodeURIComponent(token)+'&spender='+encodeURIComponent(spender)+'&owner='+encodeURIComponent(owner))
+    .then(function(r){return r.json();}).catch(function(){return null;}).then(function(d){
   var msg=sigbox('This is exactly what you would sign',
     '<div class="mono sigline"><b>call</b> approve('+esc(spender)+', 0)</div>'
     +'<div class="mono sigline"><b>token</b> '+esc(token)+'</div>'
-    +'<div class="sigline">Sets this spender’s TRC-20 allowance on TRON to zero.</div>',
+    +'<div class="sigline">Sets this spender’s TRC-20 allowance on TRON to zero.</div>'
+    +simRow(d&&d.simulation),
     'Sign in TronLink / Trust');
   document.getElementById('dosign').onclick=function(){
     var btn=this, tw=window.tronWeb;
@@ -410,16 +422,21 @@ function revokeTron(b){
     }
     msg.innerHTML='No TRON wallet here. Open GuardBot in TronLink or Trust Wallet’s browser to revoke on TRON.';
   };
+  });
 }
 // Solana: a "delegate" is revoked with the SPL Token `revoke` instruction on the token ACCOUNT,
 // built with @solana/spl-token and signed by window.solana (Phantom / Trust).
 function revokeSolana(b){
   var tokenAccount=b.dataset.account, owner=multi.solana||addr.value.trim();
   if(!tokenAccount){ _sigbox.innerHTML='<div class="err">missing token account for this delegate</div>'; return; }
+  _sigbox.innerHTML='<div class="status">Simulating the revoke on-chain…</div>';
+  fetch('/v1/revoke?chain=solana&kind=delegate&account='+encodeURIComponent(tokenAccount)+'&owner='+encodeURIComponent(owner))
+    .then(function(r){return r.json();}).catch(function(){return null;}).then(function(d){
   var msg=sigbox('This is exactly what you would sign',
     '<div class="mono sigline"><b>call</b> revoke(token account)</div>'
     +'<div class="mono sigline"><b>account</b> '+esc(tokenAccount)+'</div>'
-    +'<div class="sigline">Removes the delegate from this SPL token account.</div>',
+    +'<div class="sigline">Removes the delegate from this SPL token account.</div>'
+    +simRow(d&&d.simulation),
     'Sign in Phantom / Trust');
   document.getElementById('dosign').onclick=function(){
     var btn=this, sol=window.solana||(window.phantom&&window.phantom.solana);
@@ -448,6 +465,7 @@ function revokeSolana(b){
       rescanSoon(20000); })
       .catch(function(e){ btn.disabled=false; msg.textContent='Not signed: '+((e&&e.message)||'cancelled'); });
   };
+  });
 }
 function bindRevoke(){
   var panel=document.getElementById('sign'); _sigbox=panel;

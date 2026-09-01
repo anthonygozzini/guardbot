@@ -492,10 +492,16 @@ def _identity(chain, token, symbol, own_reserve):
     if not symbol:
         return None
     entries = _registry(chain).get(symbol.upper())
-    if not entries or len(entries) < 2:
+    # Only a LEADER is required, not a pre-mined impostor: the registry keeps claimants by
+    # liquidity, so a scam whose pool has been drained drops out of it — and the impersonation
+    # check went silent exactly when the token became worthless. The comparison below uses this
+    # token's own live reserve, so an unlisted claimant is judged first-hand, not by snapshot.
+    if not entries:
         return None
     top_addr, top_res = entries[0][0], int(entries[0][1])
     if top_addr.lower() == token.lower():
+        if len(entries) < 2:
+            return None      # uncontested: nothing to compare, so no claim either way
         return {"canonical": True, "symbol": symbol, "claimants": len(entries)}
     mine = max(int(own_reserve or 0), 1)
     base = {"canonical": False, "symbol": symbol, "claimants": len(entries),

@@ -306,7 +306,13 @@ class H(BaseHTTPRequestHandler):
             q = parse_qs(u.query)
             g = lambda k: (q.get(k) or [""])[0].strip()
             try:
-                if g("owner"):
+                chain = g("chain").lower()
+                if chain == "solana":
+                    # no calldata here — the browser builds the instruction; the server PROVES it
+                    self._json(200, revoke_mod.simulate_revoke_solana(g("owner"), g("account") or g("token")))
+                elif chain == "tron":
+                    self._json(200, revoke_mod.simulate_revoke_tron(g("owner"), g("token"), g("spender")))
+                elif g("owner"):
                     # prove the effect before the user signs — simulate the revoke and re-read
                     self._json(200, revoke_mod.simulate_revoke(g("chain"), g("kind"), g("owner"),
                                                                g("token"), g("spender")))

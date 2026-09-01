@@ -29,6 +29,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import approvals
+import revoke
 import tokencheck
 from keccak import keccak256, selector, topic
 
@@ -296,6 +297,38 @@ class TestRevokeEffect(unittest.TestCase):
         self._find_and_check("ethereum", A.PERMIT2_APPROVAL_TOPIC, A.PERMIT2, "permit2", live)
 
 
+@live_only
+class TestRevokeEffectNonEvm(unittest.TestCase):
+    """The same zero-gas proof as the EVM revokes, for the chains with no calldata: the SPL
+    `Revoke` instruction runs under simulateTransaction and the TRC-20 approve(spender, 0)
+    under triggerconstantcontract — both against LIVE grants on public fixture wallets. What
+    this proves is the instruction; wallet-side signing on Solana/TRON stays unverified until
+    a real signature goes through."""
+    SOL_OWNER = "47gTZwMbjSqVCffvqhdRAHBKo3ZKCr4nVR5vyEVv5P6L"
+    TRON_OWNER = "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
+
+    def test_solana_delegate_revoke_executes(self):
+        rows = [i for i in approvals.approvals(self.SOL_OWNER)["items"] if i["kind"] == "delegate"]
+        if not rows:
+            self.skipTest("fixture wallet no longer holds a delegate — pick another")
+        r = revoke.simulate_revoke_solana(self.SOL_OWNER, rows[0]["evidence"]["token_account"])
+        self.assertTrue(r["simulation"]["simulated"], r)
+        self.assertTrue(r["simulation"]["works"], r)
+
+    def test_tron_approval_revoke_executes(self):
+        rows = approvals.approvals(self.TRON_OWNER)["items"]
+        if not rows:
+            self.skipTest("fixture wallet no longer holds a TRC-20 approval — pick another")
+        r = revoke.simulate_revoke_tron(self.TRON_OWNER, rows[0]["token"], rows[0]["spender"])
+        self.assertTrue(r["simulation"]["simulated"], r)
+        self.assertTrue(r["simulation"]["works"], r)
+        self.assertGreater(int(r["simulation"]["allowance_before"]), 0)
+
+    def test_bad_inputs_are_refused_not_simulated(self):
+        self.assertIn("error", revoke.simulate_revoke_solana("nope", "nope"))
+        self.assertIn("error", revoke.simulate_revoke_tron("0xabc", "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb", "x"))
+
+
 class TestTronSafety(unittest.TestCase):
     def test_base58_to_hex_address(self):
         import troncheck
@@ -380,6 +413,18 @@ class TestImpersonationRule(unittest.TestCase):
 
     def test_uncontested_symbol_makes_no_claim(self):
         self.assertIsNone(tokencheck._identity("testchain", "0xonly", "SOLO", 5 * 10 ** 18))
+
+    def test_unlisted_claimant_is_judged_by_its_own_reserve(self):
+        # The registry keeps claimants by liquidity, so a scam whose pool was drained is no
+        # longer listed — that must not silence the check. A newcomer claiming a ticker with a
+        # known leader is compared on its LIVE reserve: dwarfed and empty = impostor ...
+        r = tokencheck._identity("testchain", "0xnewfake", "SOLO", 0)
+        self.assertFalse(r["canonical"])
+        self.assertTrue(r["impostor"])
+        # ... while one with a real market of its own is a shared ticker, not a theft
+        r = tokencheck._identity("testchain", "0xnewreal", "SOLO", 5 * 10 ** 18)
+        self.assertFalse(r["canonical"])
+        self.assertFalse(r.get("impostor", False))
 
     def test_different_symbols_never_collide(self):
         self.assertIsNone(tokencheck._identity("testchain", "0xanything", "USDE", 0))

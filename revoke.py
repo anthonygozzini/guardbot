@@ -142,6 +142,165 @@ def simulate_revoke(chain, kind, owner, token, spender):
     return built
 
 
+# ---------------- Solana / TRON: the same proof, zero gas, no wallet ----------------
+# The EVM path proves a revoke with eth_simulateV1. Solana and TRON have the same primitive
+# (simulateTransaction / triggerconstantcontract), so a SOL delegate or TRC-20 approval can be
+# proven revocable against a LIVE grant without spending anything or holding a key. What this
+# proves: the instruction is correct for this owner/account. What it does NOT prove: that a
+# given wallet app accepts and signs our transaction object — that stays unverified until a
+# real signature goes through, and is reported as such.
+
+SOL_FEE_PAYER_FALLBACK = "5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9"
+
+
+def _cu16(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def simulate_revoke_solana(owner, token_account):
+    """SPL Token `Revoke` (instruction 5) on the token ACCOUNT holding the delegate, simulated
+    with sigVerify=false. Builds the legacy message in pure Python: no SDK, no key."""
+    import base64
+    import solcheck
+    import solmeta
+    try:
+        okey, akey = solmeta.b58decode(owner), solmeta.b58decode(token_account)
+        if len(okey) != 32 or len(akey) != 32:
+            raise ValueError
+    except Exception:
+        return {"error": "owner and token account must be base58 Solana public keys"}
+    out = {"chain": "solana", "kind": "delegate", "owner": owner, "token_account": token_account,
+           "human": {"call": f"revoke({token_account})", "contract": "SPL Token program",
+                     "effect": "removes the delegate from this token account; no other change"}}
+    info = solcheck._rpc("getAccountInfo", [token_account, {"encoding": "jsonParsed"}])
+    val = (info.get("result") or {}).get("value") if isinstance(info, dict) else None
+    if not val:
+        out["simulation"] = {"simulated": False, "note": "could not read the token account"
+                             + (": " + info["error"] if isinstance(info, dict) and info.get("error") else "")}
+        return out
+    program = val.get("owner")
+    parsed = ((val.get("data") or {}).get("parsed") or {}).get("info") or {}
+    if parsed.get("owner") != owner:
+        out["simulation"] = {"simulated": False, "note": "this token account is not owned by that wallet"}
+        return out
+    delegate = parsed.get("delegate")
+    if not delegate:
+        out["simulation"] = {"simulated": True, "executes": False, "works": False,
+                             "note": "no delegate on this account — nothing to revoke"}
+        return out
+    bh = solcheck._rpc("getLatestBlockhash", [{"commitment": "finalized"}])
+    blockhash = ((bh.get("result") or {}).get("value") or {}).get("blockhash") if isinstance(bh, dict) else None
+    if not blockhash:
+        out["simulation"] = {"simulated": False, "note": "could not fetch a recent blockhash"}
+        return out
+    pkey = solmeta.b58decode(program)
+    bhash = solmeta.b58decode(blockhash)
+
+    def build(payer_key):
+        # legacy message. Signers first: [payer?, owner]; then the writable token account; then
+        # the program (read-only). The Revoke instruction takes [token_account, owner].
+        if payer_key is None:
+            keys, ix_acc, prog_ix, nsig = [okey, akey, pkey], [1, 0], 2, 1
+        else:
+            keys, ix_acc, prog_ix, nsig = [payer_key, okey, akey, pkey], [2, 1], 3, 2
+        msg = bytes([nsig, 0, 1]) + _cu16(len(keys)) + b"".join(keys) + bhash
+        msg += _cu16(1) + bytes([prog_ix]) + _cu16(len(ix_acc)) + bytes(ix_acc) + _cu16(1) + bytes([5])
+        return _cu16(nsig) + bytes(64 * nsig) + msg      # unverified signature slots
+
+    def run(tx):
+        sim = solcheck._rpc("simulateTransaction",
+                            [base64.b64encode(tx).decode(),
+                             {"encoding": "base64", "sigVerify": False, "commitment": "processed"}])
+        return (sim.get("result") or {}).get("value") if isinstance(sim, dict) else None, sim
+
+    res, sim = run(build(None))
+    fee_note = None
+    if res is not None and res.get("err") == "AccountNotFound":
+        # the owner holds no SOL, so the fee payer "does not exist" for the runtime. Pay the
+        # SIMULATED fee from a large, permanently funded account instead — it signs nothing and
+        # is not part of the real transaction; the instruction itself is unchanged.
+        bal = solcheck._rpc("getBalance", [owner])
+        if ((bal.get("result") or {}).get("value") or 0) == 0:
+            res, sim = run(build(solmeta.b58decode(SOL_FEE_PAYER_FALLBACK)))
+            fee_note = ("owner holds no SOL: the fee was paid by a substitute account in the "
+                        "simulation only — the real transaction needs a little SOL for its fee")
+    if res is None:
+        out["simulation"] = {"simulated": False, "note": "simulateTransaction unavailable"
+                             + (": " + str(sim.get("error"))[:100] if isinstance(sim, dict) and sim.get("error") else "")}
+        return out
+    err = res.get("err")
+    out["program"] = program
+    out["simulation"] = {"simulated": True, "executes": err is None, "works": err is None,
+                         "delegate_before": delegate,
+                         "error": None if err is None else str(err)[:160],
+                         "logs": (res.get("logs") or [])[-4:]}
+    if fee_note:
+        out["simulation"]["note"] = fee_note
+    return out
+    err = res.get("err")
+    out["program"] = program
+    out["simulation"] = {"simulated": True, "executes": err is None, "works": err is None,
+                         "delegate_before": delegate,
+                         "error": None if err is None else str(err)[:160],
+                         "logs": (res.get("logs") or [])[-4:]}
+    return out
+
+
+def _tron_param(addr_hex):
+    return addr_hex[2:].rjust(64, "0")    # drop the 0x41 prefix, left-pad the 20 bytes
+
+
+def simulate_revoke_tron(owner, token, spender):
+    """TRC-20 approve(spender, 0) run as a constant call from the owner — executed by the node,
+    never broadcast. works=True when the call does not revert for THIS owner/token/spender and a
+    live allowance exists to revoke (the constant call cannot change state, so the proof is 'the
+    revoking call executes cleanly against a real grant')."""
+    import troncheck
+    oh, th, sh = troncheck.b58_to_hex(owner), troncheck.b58_to_hex(token), troncheck.b58_to_hex(spender)
+    if not (oh and th and sh):
+        return {"error": "owner, token and spender must be TRON base58 (T…) addresses"}
+    out = {"chain": "tron", "kind": "approval", "owner": owner, "token": token, "spender": spender,
+           "human": {"call": f"approve({spender}, 0)", "contract": token,
+                     "effect": "sets this spender's TRC-20 allowance on this token to zero"}}
+    before = troncheck._post("/wallet/triggerconstantcontract",
+                             {"owner_address": oh, "contract_address": th,
+                              "function_selector": "allowance(address,address)",
+                              "parameter": _tron_param(oh) + _tron_param(sh), "visible": False})
+    cr = before.get("constant_result") if isinstance(before, dict) else None
+    allowance = int(cr[0], 16) if cr and cr[0] else None
+    sim = troncheck._post("/wallet/triggerconstantcontract",
+                          {"owner_address": oh, "contract_address": th,
+                           "function_selector": "approve(address,uint256)",
+                           "parameter": _tron_param(sh) + "0" * 64, "visible": False})
+    if not isinstance(sim, dict) or sim.get("error") or "result" not in sim:
+        out["simulation"] = {"simulated": False, "note": "TronGrid constant call unavailable"
+                             + (": " + str(sim.get("error"))[:100] if isinstance(sim, dict) and sim.get("error") else "")}
+        return out
+    r = sim.get("result") or {}
+    executes = bool(r.get("result")) and not r.get("message")
+    rev = r.get("message")
+    try:
+        rev = bytes.fromhex(rev).decode("utf-8", "ignore").strip("\x00 ") if rev else None
+    except Exception:
+        pass
+    out["simulation"] = {"simulated": True, "executes": executes,
+                         "works": executes and (allowance is None or allowance > 0),
+                         "allowance_before": None if allowance is None else str(allowance),
+                         "energy_used": sim.get("energy_used"),
+                         "error": None if executes else (rev or str(r.get("code") or "reverted"))[:160]}
+    if executes and allowance == 0:
+        out["simulation"]["note"] = "the call executes, but the allowance is already zero"
+    return out
+
+
 if __name__ == "__main__":
     import json
     import sys
