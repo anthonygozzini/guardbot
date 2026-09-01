@@ -22,12 +22,13 @@ Every one of those is read from `getAccountInfo` / `getTokenLargestAccounts` on 
 
 import base64
 import json
+import os
 import time
 import urllib.request
 
 import solmeta
 
-RPCS = ["https://api.mainnet-beta.solana.com"]
+RPCS = [os.environ.get("GUARDBOT_SOLANA_RPC", "https://api.mainnet-beta.solana.com")]
 UA = "Mozilla/5.0 (guardbot/0.1; solana token safety; read-only)"
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"

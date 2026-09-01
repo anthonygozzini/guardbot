@@ -183,6 +183,22 @@ curl "http://127.0.0.1:8403/v1/tokencheck?chain=bsc&address=0x<token>"
 ```
 
 ## Tests
+
+### Testing the Solana / TRON revoke signing without spending anything
+
+Nobody tests signing with real money: use the testnets. Start the daemon in testnet mode and
+open the test-grants page with throwaway wallets (Phantom in *Testnet mode*, TronLink on *Nile*):
+
+```
+GUARDBOT_SOLANA_RPC=https://api.devnet.solana.com GUARDBOT_TRON_NETWORK=nile GUARDBOT_DEV_SEED=1 python3 guardd.py
+```
+
+`/dev/seed` airdrops devnet SOL and creates a 1-unit SPL delegate; on Nile it approves 1 unit of
+test USDT (faucet: nileex.io). Then `/view` on the same wallet shows the row → **Revoke** → sign →
+the receipt is watched and the row disappears when the live allowance reads zero. The viewer
+shows a TESTNET chip in this mode; EVM chains stay mainnet. Nothing on this page runs unless
+`GUARDBOT_DEV_SEED=1` is set — GuardBot itself never builds an approval.
+
 ```bash
 python3 -m unittest discover -s tests          # 27 unit tests, no network, ~5ms
 GUARDBOT_LIVE=1 python3 -m unittest discover -s tests   # + 8 live tests against real tokens

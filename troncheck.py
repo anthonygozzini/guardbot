@@ -17,12 +17,15 @@ authority, the owner — catches the most common TRC-20 traps (USDT-TRON's own b
 """
 
 import json
+import os
 import urllib.request
 
 import solmeta
 from keccak import selector
 
-TRONGRID = ["https://api.trongrid.io"]
+TRONGRID = {"mainnet": ["https://api.trongrid.io"], "nile": ["https://nile.trongrid.io"],
+            "shasta": ["https://api.shasta.trongrid.io"]}.get(
+    os.environ.get("GUARDBOT_TRON_NETWORK", "mainnet").lower(), ["https://api.trongrid.io"])
 UA = "Mozilla/5.0 (guardbot/0.1; tron token safety; read-only)"
 
 # Same selectors as EVM (TRON is EVM-compatible), computed with our own keccak, never copied.

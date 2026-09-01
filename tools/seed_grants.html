@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GuardBot — test grants (testnet only)</title>
+<style>
+:root{--bg:#0b0d10;--panel:#14171c;--line:#232830;--ink:#e8ebe6;--soft:#9aa2ab;--faint:#6f767e;--accent:#33d59d;--warn:#e2a244;--risk:#f0685c;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:1.4rem;margin:0 0 6px} .warn{padding:10px 12px;border-radius:8px;background:#2a1f0f;color:var(--warn);font-size:.9rem;margin:10px 0 18px}
+.box{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--panel);margin:14px 0}
+.box h2{font-size:1.05rem;margin:0 0 8px} .mono{font-family:var(--mono);font-size:.82rem;word-break:break-all}
+button{background:var(--accent);color:#06251a;border:0;border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer;margin:6px 6px 0 0}
+button:disabled{opacity:.5;cursor:default} .hint{color:var(--faint);font-size:.82rem;margin:8px 0 0}
+.ok{color:var(--accent)} .err{color:var(--risk)} a{color:var(--accent)}
+</style></head><body><div class="wrap">
+<h1>Test grants — testnet only</h1>
+<div class="warn">This page asks a <b>TEST wallet</b> to create a tiny approval on a <b>TESTNET</b>, so GuardBot’s revoke signing can be
+verified without spending anything. Use throwaway wallets (Phantom in Testnet mode · TronLink on Nile). Never a real seed. GuardBot itself never
+approves — this page lives outside the product and is served only with <span class="mono">GUARDBOT_DEV_SEED=1</span>.</div>
+<div id="cfg" class="hint">reading daemon config…</div>
+
+<div class="box"><h2>Solana devnet</h2>
+  <div class="hint">Needs Phantom (extension) in Settings → Developer settings → <b>Testnet mode</b>. Creates the USDC-devnet token account if missing
+  and approves <b>1 unit</b> to a test delegate (the System Program address).</div>
+  <div id="solacct" class="mono" style="margin-top:8px">not connected</div>
+  <button id="solconnect">Connect Phantom</button>
+  <button id="solair" disabled>Airdrop 1 SOL (devnet)</button>
+  <button id="solseed" disabled>Create delegate (approve 1 unit)</button>
+  <div id="solmsg" class="hint"></div>
+</div>
+
+<div class="box"><h2>TRON Nile</h2>
+  <div class="hint">Needs TronLink (extension) switched to the <b>Nile</b> network, with test TRX from <a href="https://nileex.io/join/getJoinPage" target="_blank" rel="noopener">nileex.io</a>.
+  Approves <b>1 unit</b> of Nile-USDT to a test spender (the TRON black-hole address).</div>
+  <div id="tronacct" class="mono" style="margin-top:8px">not connected</div>
+  <button id="tronconnect">Connect TronLink</button>
+  <button id="tronseed" disabled>Approve 1 USDT (Nile)</button>
+  <div id="tronmsg" class="hint"></div>
+</div>
+<p class="hint">Then open the <a href="/view">viewer</a>, paste or connect the same test wallet, and press <b>Revoke</b> on the new row.</p>
+<script>
+var CFG={sol_rpc:'',tron_network:''};
+var DEVNET_USDC='4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU', SOL_DELEGATE='11111111111111111111111111111111';
+var NILE_USDT='TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf', TRON_SPENDER='T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb';
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+fetch('/v1/config').then(function(r){return r.json();}).then(function(c){ CFG=c;
+  var ok=(/devnet|testnet/.test(c.sol_rpc||''))&&(c.tron_network&&c.tron_network!=='mainnet');
+  document.getElementById('cfg').innerHTML='daemon: solana <span class="mono">'+esc(c.sol_rpc)+'</span> · tron <span class="mono">'+esc(c.tron_network)+'</span>'
+    +(ok?' <span class="ok">✓ testnet mode</span>':' <span class="err">⚠ NOT in testnet mode — start the daemon with GUARDBOT_SOLANA_RPC=https://api.devnet.solana.com GUARDBOT_TRON_NETWORK=nile</span>');
+}).catch(function(){ document.getElementById('cfg').textContent='could not read /v1/config'; });
+
+// ---------- Solana devnet ----------
+var sol=null, solPk='';
+var solmsg=document.getElementById('solmsg');
+document.getElementById('solconnect').onclick=function(){
+  sol=window.solana||(window.phantom&&window.phantom.solana);
+  if(!sol){ solmsg.innerHTML='<span class="err">No Solana wallet injected — install Phantom and enable Testnet mode.</span>'; return; }
+  Promise.resolve(sol.connect()).then(function(res){
+    solPk=(res&&res.publicKey&&res.publicKey.toString())||(sol.publicKey&&sol.publicKey.toString());
+    document.getElementById('solacct').textContent=solPk;
+    document.getElementById('solair').disabled=false; document.getElementById('solseed').disabled=false;
+    solmsg.textContent='Connected. Make sure Phantom is in Testnet mode (devnet).';
+  }).catch(function(e){ solmsg.innerHTML='<span class="err">'+esc((e&&e.message)||'cancelled')+'</span>'; });
+};
+function web3mods(){ return Promise.all([import('https://esm.sh/@solana/web3.js@1.95.8'), import('https://esm.sh/@solana/spl-token@0.4.9')]); }
+document.getElementById('solair').onclick=function(){
+  solmsg.textContent='Requesting airdrop…';
+  web3mods().then(function(m){ var web3=m[0]; var conn=new web3.Connection(CFG.sol_rpc,'confirmed');
+    return conn.requestAirdrop(new web3.PublicKey(solPk), 1e9).then(function(sig){ return conn.confirmTransaction(sig,'confirmed').then(function(){ return sig; }); });
+  }).then(function(sig){ solmsg.innerHTML='<span class="ok">Airdropped 1 SOL</span> <span class="mono">'+esc(sig)+'</span>'; })
+    .catch(function(e){ solmsg.innerHTML='<span class="err">Airdrop refused ('+esc((e&&e.message)||'rate limit')+') — use <a href="https://faucet.solana.com" target="_blank" rel="noopener">faucet.solana.com</a> for this address, then continue.</span>'; });
+};
+document.getElementById('solseed').onclick=function(){
+  solmsg.textContent='Building the transaction…';
+  web3mods().then(function(m){ var web3=m[0], spl=m[1];
+    var conn=new web3.Connection(CFG.sol_rpc,'confirmed');
+    var owner=new web3.PublicKey(solPk), mint=new web3.PublicKey(DEVNET_USDC), delegate=new web3.PublicKey(SOL_DELEGATE);
+    var ata=spl.getAssociatedTokenAddressSync(mint, owner);
+    var tx=new web3.Transaction()
+      .add(spl.createAssociatedTokenAccountIdempotentInstruction(owner, ata, owner, mint))
+      .add(spl.createApproveInstruction(ata, delegate, owner, 1));
+    tx.feePayer=owner;
+    return conn.getLatestBlockhash().then(function(bh){ tx.recentBlockhash=bh.blockhash; return sol.signAndSendTransaction(tx); })
+      .then(function(res){ var sig=(res&&res.signature)||res; return conn.confirmTransaction(sig,'confirmed').then(function(){ return {sig:sig, ata:ata.toString()}; }); });
+  }).then(function(r){ solmsg.innerHTML='<span class="ok">Delegate created</span> on token account <span class="mono">'+esc(r.ata)+'</span> · '
+      +'<a href="https://explorer.solana.com/tx/'+esc(r.sig)+'?cluster=devnet" target="_blank" rel="noopener">tx</a>. Now revoke it in the viewer.'; })
+    .catch(function(e){ solmsg.innerHTML='<span class="err">'+esc((e&&e.message)||'failed')+'</span>'; });
+};
+
+// ---------- TRON Nile ----------
+var tronmsg=document.getElementById('tronmsg');
+document.getElementById('tronconnect').onclick=function(){
+  var ask=window.tronLink&&window.tronLink.request?Promise.resolve(window.tronLink.request({method:'tron_requestAccounts'})).catch(function(){}):Promise.resolve();
+  ask.then(function(){
+    var tw=window.tronWeb; var a=tw&&tw.defaultAddress&&tw.defaultAddress.base58;
+    if(!a){ tronmsg.innerHTML='<span class="err">No TRON wallet injected / locked — install TronLink and pick the Nile network.</span>'; return; }
+    var host=(tw.fullNode&&tw.fullNode.host)||'';
+    document.getElementById('tronacct').textContent=a+'  ·  node: '+host;
+    document.getElementById('tronseed').disabled=false;
+    tronmsg.innerHTML=/nile/i.test(host)?'Connected on Nile.':'<span class="err">⚠ TronLink is not on Nile (node '+esc(host)+') — switch network first.</span>';
+  });
+};
+document.getElementById('tronseed').onclick=function(){
+  tronmsg.textContent='Check TronLink…';
+  var tw=window.tronWeb;
+  tw.contract().at(NILE_USDT).then(function(c){ return c.approve(TRON_SPENDER, 1).send(); })
+    .then(function(txid){ tronmsg.innerHTML='<span class="ok">Approved 1 unit</span> · <a href="https://nile.tronscan.org/#/transaction/'+esc(txid)+'" target="_blank" rel="noopener">tx</a>. '
+      +'TronScan indexes in 1–3 min; then scan this address in the viewer and revoke.'; })
+    .catch(function(e){ tronmsg.innerHTML='<span class="err">'+esc((e&&e.message)||'failed')+'</span>'; });
+};
+</script></div></body></html>

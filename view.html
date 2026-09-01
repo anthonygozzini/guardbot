@@ -93,7 +93,13 @@ var connect=document.getElementById('connect'), wconn=document.getElementById('w
 var activeProvider=window.ethereum||null, WC_PID='', wcProvider=null, connected=false;
 var wcUP=null, multi={evm:'',solana:'',tron:''};   // one WalletConnect session, up to 3 addresses
 var forcePrompt=false;   // set by Disconnect: next Connect must re-ask the wallet where its API allows it
-try{ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){WC_PID=(c&&c.wc_project_id)||'';}).catch(function(){}); }catch(e){}
+var CFG={sol_rpc:'https://api.mainnet-beta.solana.com',tron_network:'mainnet',testnet:false};
+try{ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){
+  WC_PID=(c&&c.wc_project_id)||''; CFG=Object.assign(CFG,c||{});
+  if(CFG.testnet){ document.querySelector('.sub').insertAdjacentHTML('afterbegin',
+    '<span class="tag" style="background:#2a1f0f;color:var(--warn)">TESTNET · solana '+esc(CFG.sol_rpc.replace(/^https?:\/\//,''))
+    +' · tron '+esc(CFG.tron_network)+' · EVM stays mainnet</span> '); }
+}).catch(function(){}); }catch(e){}
 
 // WalletConnect is multi-chain only through UniversalProvider with several NAMESPACES in one session
 // (ethereum-provider does eip155 alone). We ask for eip155 + solana + tron as OPTIONAL, so one QR
@@ -511,7 +517,7 @@ function revokeTron(b){
       msg.textContent='Loading…';
       import('https://esm.sh/tronweb@6.0.0').then(function(TW){
         var TronWeb=TW.TronWeb||TW.default||TW;
-        var tron=new TronWeb({fullHost:'https://api.trongrid.io'});
+        var tron=new TronWeb({fullHost:{mainnet:'https://api.trongrid.io',nile:'https://nile.trongrid.io',shasta:'https://api.shasta.trongrid.io'}[CFG.tron_network]||'https://api.trongrid.io'});
         tron.setAddress(multi.tron);
         var sel='approve(address,uint256)';
         return tron.transactionBuilder.triggerSmartContract(token, sel,
@@ -553,7 +559,7 @@ function revokeSolana(b){
     Promise.all([import('https://esm.sh/@solana/web3.js@1.95.8'),
                  import('https://esm.sh/@solana/spl-token@0.4.9')]).then(function(m){
       var web3=m[0], spl=m[1];
-      var conn=new web3.Connection('https://api.mainnet-beta.solana.com','confirmed');
+      var conn=new web3.Connection(CFG.sol_rpc,'confirmed');
       var ownerPk=new web3.PublicKey(owner), taPk=new web3.PublicKey(tokenAccount);
       var tx=new web3.Transaction().add(spl.createRevokeInstruction(taPk, ownerPk));
       tx.feePayer=ownerPk;

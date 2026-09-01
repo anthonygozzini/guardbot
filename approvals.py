@@ -142,7 +142,12 @@ def _chain_rpc(name, cfg):
         except Exception:
             continue
     return urls[0] if urls else ""
-SOL_RPC = "https://api.mainnet-beta.solana.com"
+# Testnet mode is how signing gets verified WITHOUT spending: Solana devnet (free airdrop) and
+# TRON Nile (free faucet). Same code paths, different endpoints; the viewer shows a TESTNET chip.
+SOL_RPC = os.environ.get("GUARDBOT_SOLANA_RPC", "https://api.mainnet-beta.solana.com")
+TRON_NETWORK = os.environ.get("GUARDBOT_TRON_NETWORK", "mainnet").lower()
+TRONSCAN = {"mainnet": "https://apilist.tronscanapi.com", "nile": "https://nileapi.tronscan.org",
+            "shasta": "https://shastapi.tronscan.org"}.get(TRON_NETWORK, "https://apilist.tronscanapi.com")
 SPL_PROGRAMS = ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   # SPL Token
                 "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"]   # Token-2022
 UNLIMITED = 10 ** 30  # heuristic threshold for "unlimited-ish" allowance
@@ -1101,7 +1106,7 @@ def _evm(address):
 def _tron(address):
     items = []
     try:
-        d = _get(f"https://apilist.tronscanapi.com/api/account/approve/list?address={address}&start=0&limit=50")
+        d = _get(f"{TRONSCAN}/api/account/approve/list?address={address}&start=0&limit=50")
     except Exception:
         return [], ["tron?"]
     cinfo = d.get("contractInfo") or {}

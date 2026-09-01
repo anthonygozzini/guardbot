@@ -55,6 +55,9 @@ PORT = int(os.environ.get("GUARDBOT_PORT", "8403"))
 # local network, which is what lets a phone on the same Wi-Fi open the viewer (and connect its
 # wallet's own in-app browser, where the Solana/TRON providers are injected).
 HOST = os.environ.get("GUARDBOT_HOST", "127.0.0.1")
+TESTNET = ("devnet" in approvals_mod.SOL_RPC or "testnet" in approvals_mod.SOL_RPC
+           or approvals_mod.TRON_NETWORK != "mainnet")
+DEV_SEED = os.environ.get("GUARDBOT_DEV_SEED", "") in ("1", "true", "yes")
 
 
 def _lan_ip():
@@ -277,6 +280,21 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if u.path == "/dev/seed" and DEV_SEED:
+            # test-only page that asks a TEST wallet to create a tiny grant on a TESTNET, so the
+            # revoke signing can be exercised for free. Off unless GUARDBOT_DEV_SEED=1.
+            try:
+                with open(os.path.join(BASE, "tools", "seed_grants.html"), "rb") as fh:
+                    body = fh.read()
+            except OSError:
+                body = b"<h1>seed page not found</h1>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path == "/llms.txt":
             body = LLMS.encode()
             self.send_response(200)
@@ -315,7 +333,11 @@ class H(BaseHTTPRequestHandler):
             # Frontend config. The WalletConnect projectId is a PUBLIC frontend identifier (safe
             # to expose); it's read from env so no account detail is baked into the code. Empty =
             # WalletConnect stays off and the viewer uses injected wallets only.
-            self._json(200, {"wc_project_id": os.environ.get("GUARDBOT_WC_PROJECT_ID", "")})
+            self._json(200, {"wc_project_id": os.environ.get("GUARDBOT_WC_PROJECT_ID", ""),
+                             "sol_rpc": approvals_mod.SOL_RPC,
+                             "tron_network": approvals_mod.TRON_NETWORK,
+                             "testnet": TESTNET,
+                             "dev_seed": DEV_SEED})
         elif u.path == "/v1/revoke":
             # Builds the revoking calldata only. Nothing is signed or broadcast server-side:
             # the wallet does that, so this endpoint can never move anyone's funds.
@@ -375,6 +397,11 @@ if __name__ == "__main__":
           flush=True)
     print(f"  ➜  Approvals viewer:  http://127.0.0.1:{PORT}/view", flush=True)
     print(f"  ➜  API / agents:      http://127.0.0.1:{PORT}/llms.txt", flush=True)
+    if TESTNET:
+        print(f"  ⚠  TESTNET MODE: solana={approvals_mod.SOL_RPC}  tron={approvals_mod.TRON_NETWORK}"
+              "  — EVM chains are still mainnet", flush=True)
+    if DEV_SEED:
+        print(f"  ➜  Test grants page:  http://127.0.0.1:{PORT}/dev/seed   (test wallets only)", flush=True)
     if HOST not in ("127.0.0.1", "localhost"):
         lan = _lan_ip()
         print(f"  ➜  On this network:   http://{lan or HOST}:{PORT}/view   "
