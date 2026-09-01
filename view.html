@@ -241,8 +241,33 @@ function showMulti(how){
   if(multi.solana) parts.push('SOL <span class="mono">'+esc(short(multi.solana))+'</span>');
   if(multi.tron) parts.push('TRON <span class="mono">'+esc(short(multi.tron))+'</span>');
   var miss=[]; if(!multi.solana) miss.push('Solana'); if(!multi.tron) miss.push('TRON');
+  // Say exactly what kind of connection this is, from first-hand data, so what the page shows
+  // matches what the wallet shows: a WalletConnect session lists the chains the wallet approved
+  // (read from the session, not assumed); an in-app connection names the injected providers and
+  // says it will NOT appear under the wallet's WalletConnect list.
+  var kind;
+  if(wc){
+    var ns=(wcUP&&wcUP.session&&wcUP.session.namespaces)||{}, approved=[];
+    Object.keys(ns).forEach(function(k){
+      var chains=ns[k].chains||(ns[k].accounts||[]).map(function(a){return a.split(':').slice(0,2).join(':');});
+      chains.forEach(function(c){
+        var id=c.split(':'); var name=id[0]==='eip155'?(Object.keys(CHAIN_IDS).filter(function(n){return CHAIN_IDS[n]==+id[1];})[0]||c):id[0];
+        if(approved.indexOf(name)<0) approved.push(name);
+      });
+    });
+    var peer=(wcUP&&wcUP.session&&wcUP.session.peer&&wcUP.session.peer.metadata&&wcUP.session.peer.metadata.name)||'your wallet';
+    kind='<b>WalletConnect session</b> with '+esc(peer)+' · chains it approved: <span class="mono">'+esc(approved.join(', ')||'—')
+      +'</span> — this is the entry you will find in the wallet’s WalletConnect list.';
+  } else {
+    var inj=[]; if(window.ethereum) inj.push('ethereum'); if(solProvider()) inj.push('solana');
+    if(window.tronWeb||window.tronLink) inj.push('tronWeb');
+    kind='<b>In-app connection</b> through the providers this wallet’s browser injected (<span class="mono">'+esc(inj.join(', '))
+      +'</span>). It is <b>not</b> a WalletConnect session, so it will not appear in that list — look under the wallet’s '
+      +'connected sites / dapp browser instead.';
+  }
   wconn.innerHTML='<div class="wc-ok">Connected · '+parts.join(' &nbsp;·&nbsp; ')
     +' <span class="hint" style="margin:0">'+esc(how)+'</span></div>'
+    +'<div class="hint" style="margin:4px 0 0">'+kind+'</div>'
     +(miss.length?'<div class="hint" style="margin:2px 0 0">'+esc(miss.join(' & '))
       +(wc?' not exposed by this wallet over WalletConnect — open GuardBot in that wallet’s own browser to include it.'
           :' not injected by this wallet’s browser — it does not expose that chain here.')+'</div>':'');
