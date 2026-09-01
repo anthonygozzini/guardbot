@@ -92,6 +92,7 @@ var CHAIN_IDS={ethereum:1,bsc:56,polygon:137,base:8453,arbitrum:42161,optimism:1
 var connect=document.getElementById('connect'), wconn=document.getElementById('wconn');
 var activeProvider=window.ethereum||null, WC_PID='', wcProvider=null, connected=false;
 var wcUP=null, multi={evm:'',solana:'',tron:''};   // one WalletConnect session, up to 3 addresses
+var forcePrompt=false;   // set by Disconnect: next Connect must re-ask the wallet where its API allows it
 try{ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){WC_PID=(c&&c.wc_project_id)||'';}).catch(function(){}); }catch(e){}
 
 // WalletConnect is multi-chain only through UniversalProvider with several NAMESPACES in one session
@@ -134,9 +135,16 @@ function resetWalletUI(){
   connect.textContent='Connect wallet'; connect.classList.remove('danger'); connect.disabled=false;
 }
 function disconnectWallet(){
+  var wasWC=!!(wcUP&&wcUP.session);
   if(wcUP){ try{ Promise.resolve(wcUP.disconnect()).catch(function(){}); }catch(e){} }
   else if(wcProvider){ try{ Promise.resolve(wcProvider.disconnect()).catch(function(){}); }catch(e){} }
+  // injected wallets keep trusting the site after the page "disconnects"; revoke what their APIs let us
+  try{ var sp=solProvider(); if(sp&&sp.disconnect) Promise.resolve(sp.disconnect()).catch(function(){}); }catch(e){}
+  if(window.ethereum){ try{ window.ethereum.request({method:'wallet_revokePermissions', params:[{eth_accounts:{}}]}).catch(function(){}); }catch(e){} }
+  forcePrompt=true;
   resetWalletUI();
+  if(!wasWC) wconn.innerHTML='<div class="hint" style="margin:8px 0 0">Disconnected from this page. If the wallet reconnects '
+    +'without asking, it still trusts this site — revoke that in the wallet’s <b>Connected sites</b> settings.</div>';
 }
 
 function useAccounts(accts, how){
@@ -316,13 +324,24 @@ function solProvider(){
 function anyInjected(){
   return !!(window.ethereum||solProvider()||window.tronWeb||window.tronLink);
 }
+function evmAccounts(){
+  // after a Disconnect, ask for permissions again (forces the wallet's prompt where supported —
+  // MetaMask/Rabby do; a wallet that ignores it falls back to the silent cached answer)
+  var eth=window.ethereum;
+  if(!forcePrompt) return eth.request({method:'eth_requestAccounts'});
+  return eth.request({method:'wallet_requestPermissions', params:[{eth_accounts:{}}]})
+    .then(function(){ return eth.request({method:'eth_accounts'}); })
+    .catch(function(){ return eth.request({method:'eth_requestAccounts'}); });
+}
 function connectInjectedAll(){
-  connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
+  connect.disabled=true;
+  wconn.innerHTML='<div class="status">Check your wallet — an in-app wallet asks <b>once per chain</b> '
+    +'(ETH, then Solana, then TRON); a QR/WalletConnect session approves them all on one screen.</div>';
   var got={};
   var step=Promise.resolve();
   if(window.ethereum){
     step=step.then(function(){
-      return window.ethereum.request({method:'eth_requestAccounts'})
+      return evmAccounts()
         .then(function(a){ var x=normAddr((a||[])[0]); if(x){ multi.evm=x; got.evm=1; } })
         .catch(function(){});
     });
@@ -359,6 +378,9 @@ function connectInjectedAll(){
     var e=window.ethereum||{};
     var name=e.isTrust||e.isTrustWallet?'Trust Wallet':e.isMetaMask?'MetaMask':e.isRabby?'Rabby':'this wallet';
     showMulti('via '+name+' (in-app)');
+    if(forcePrompt) wconn.insertAdjacentHTML('beforeend','<div class="hint" style="margin:2px 0 0">Reconnected — if the wallet '
+      +'did not ask, it still trusts this site (revoke it in the wallet’s Connected sites to force a new prompt).</div>');
+    forcePrompt=false;
     scanMulti();
   });
 }
