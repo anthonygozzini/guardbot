@@ -166,12 +166,22 @@ function loadScript(src){
   });
 }
 function showPairing(uri){
-  wconn.innerHTML='<div class="signbox"><div class="signhead">Scan with your wallet</div>'
-    +'<div id="wcqr" class="wcqr"></div>'
-    +'<div class="sigacts"><a class="wc-deeplink" href="'+esc(uri)+'">Open a wallet on this device</a>'
-    +'<button id="wccopy" class="ghost">Copy link</button></div>'
-    +'<div class="hint" style="margin-top:6px">Trust Wallet · MetaMask · Rabby · any WalletConnect wallet</div></div>';
+  var mobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent||'');
+  var trust='https://link.trustwallet.com/wc?uri='+encodeURIComponent(uri);
+  var buttons='<div class="sigacts" style="flex-wrap:wrap">'
+    +(mobile?'<a class="wc-deeplink" href="'+esc(trust)+'">Approve in Trust Wallet</a>':'')
+    +'<a class="wc-deeplink" style="background:transparent;border:1px solid var(--line);color:var(--soft)" href="'+esc(uri)+'">'
+    +(mobile?'Other wallet on this phone':'Open a wallet on this device')+'</a>'
+    +'<button id="wccopy" class="ghost">Copy link</button></div>';
+  wconn.innerHTML='<div class="signbox"><div class="signhead">'+(mobile?'Approve the session in your wallet':'Scan with your wallet')+'</div>'
+    +(mobile?buttons:'')
+    +'<div id="wcqr" class="wcqr"'+(mobile?' style="display:none"':'')+'></div>'
+    +(mobile?'':buttons)
+    +'<div class="hint" style="margin-top:6px">This creates a WalletConnect session — one approval for every chain the wallet '
+    +'supports; you will see it (and can end it) in the wallet’s WalletConnect list.'
+    +(mobile?' <a href="#" id="wcshowqr">Show QR instead</a>':'')+'</div></div>';
   document.getElementById('wccopy').onclick=function(){ navigator.clipboard.writeText(uri); };
+  var sq=document.getElementById('wcshowqr'); if(sq) sq.onclick=function(e){ e.preventDefault(); document.getElementById('wcqr').style.display=''; };
   (_qrLoad||(_qrLoad=loadScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js')))
     .then(function(){ new QRCode(document.getElementById('wcqr'),{text:uri,width:224,height:224}); })
     .catch(function(){ document.getElementById('wcqr').innerHTML='<div class="mono" style="word-break:break-all;font-size:.7rem">'+esc(uri)+'</div>'; });
@@ -411,8 +421,12 @@ function connectInjectedAll(){
 }
 connect.addEventListener('click',function(){
   if(connected){ disconnectWallet(); return; }   // the button is red "Disconnect" now
-  if(anyInjected()){ connectInjectedAll(); return; }   // in-app browser / extensions: all chains at once
+  // A real WalletConnect SESSION is preferred even inside a wallet's in-app browser: it is the
+  // only kind of connection the wallet lists, approves on one screen for every chain, and can
+  // end from its side. Injected providers hand addresses to any page with no permission model
+  // (Trust's dapp browser never asks for EVM and lists nothing), so they are the fallback only.
   if(WC_PID){ connectWalletConnect(); return; }
+  if(anyInjected()){ connectInjectedAll(); return; }
   wconn.innerHTML='<div class="wc-warn">No wallet in this browser. Open this page inside your '
     +'wallet’s built-in browser (Trust Wallet, MetaMask, Rabby), or install a wallet extension. '
     +'To connect any mobile wallet by QR from a normal browser, start the daemon with a free '
