@@ -186,7 +186,7 @@ function getWCProvider(){
 // each wallet's in-app browser. Connecting just reads the address; the revoke is signed by that
 // same provider. No SDK is loaded to connect — only the Solana revoke lazy-loads web3.js.
 function connectSolana(){
-  var sol=window.solana||(window.phantom&&window.phantom.solana);
+  var sol=solProvider();
   connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
   Promise.resolve(sol.connect()).then(function(res){
     connect.disabled=false;
@@ -226,16 +226,18 @@ function afterWCConnect(){
   addr.value=multi.evm||multi.solana||multi.tron;   // keep the paste field meaningful
   showMulti(); scanMulti();
 }
-function showMulti(){
+function showMulti(how){
+  how=how||'via WalletConnect'; var wc=how.indexOf('WalletConnect')>=0;
   var parts=[];
   if(multi.evm) parts.push('EVM <span class="mono">'+esc(short(multi.evm))+'</span>');
   if(multi.solana) parts.push('SOL <span class="mono">'+esc(short(multi.solana))+'</span>');
   if(multi.tron) parts.push('TRON <span class="mono">'+esc(short(multi.tron))+'</span>');
   var miss=[]; if(!multi.solana) miss.push('Solana'); if(!multi.tron) miss.push('TRON');
   wconn.innerHTML='<div class="wc-ok">Connected · '+parts.join(' &nbsp;·&nbsp; ')
-    +' <span class="hint" style="margin:0">via WalletConnect</span></div>'
+    +' <span class="hint" style="margin:0">'+esc(how)+'</span></div>'
     +(miss.length?'<div class="hint" style="margin:2px 0 0">'+esc(miss.join(' & '))
-      +' not exposed by this wallet over WalletConnect — open GuardBot in that wallet’s own browser to include it.</div>':'');
+      +(wc?' not exposed by this wallet over WalletConnect — open GuardBot in that wallet’s own browser to include it.'
+          :' not injected by this wallet’s browser — it does not expose that chain here.')+'</div>':'');
 }
 function mergeResults(results){
   var m={address:'connected wallets', address_type:'EVM + Solana + TRON', items:[], chains_scanned:[],
@@ -304,21 +306,65 @@ function scanMulti(){
   });
   paint(false);
 }
+// In a wallet's in-app browser every chain it supports is INJECTED at once (Trust: ethereum +
+// solana + tronWeb). Connecting only window.ethereum asked for "ETH" and stopped — so connect
+// every injected provider in sequence (one wallet prompt at a time) and scan them together,
+// exactly like the multi-namespace WalletConnect session.
+function solProvider(){
+  return window.solana||(window.phantom&&window.phantom.solana)||(window.trustwallet&&window.trustwallet.solana)||null;
+}
+function anyInjected(){
+  return !!(window.ethereum||solProvider()||window.tronWeb||window.tronLink);
+}
+function connectInjectedAll(){
+  connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
+  var got={};
+  var step=Promise.resolve();
+  if(window.ethereum){
+    step=step.then(function(){
+      return window.ethereum.request({method:'eth_requestAccounts'})
+        .then(function(a){ var x=normAddr((a||[])[0]); if(x){ multi.evm=x; got.evm=1; } })
+        .catch(function(){});
+    });
+  }
+  var sp=solProvider();
+  if(sp){
+    step=step.then(function(){
+      return Promise.resolve(sp.connect()).then(function(res){
+        var pk=(res&&res.publicKey&&res.publicKey.toString&&res.publicKey.toString())
+             ||(sp.publicKey&&sp.publicKey.toString&&sp.publicKey.toString());
+        if(pk){ multi.solana=pk; got.sol=1; }
+      }).catch(function(){});
+    });
+  }
+  if(window.tronLink||window.tronWeb){
+    step=step.then(function(){
+      var ask=window.tronLink&&window.tronLink.request
+        ? Promise.resolve(window.tronLink.request({method:'tron_requestAccounts'})).catch(function(){})
+        : Promise.resolve();
+      return ask.then(function(){
+        var tw=window.tronWeb||(window.tronLink&&window.tronLink.tronWeb);
+        var a=tw&&tw.defaultAddress&&tw.defaultAddress.base58;
+        if(a){ multi.tron=a; got.tron=1; }
+      });
+    });
+  }
+  step.then(function(){
+    connect.disabled=false;
+    if(!multi.evm&&!multi.solana&&!multi.tron){
+      wconn.innerHTML='<div class="wc-warn">Not connected — the wallet returned no address (cancelled?).</div>'; return; }
+    connected=true; activeProvider=window.ethereum||null;
+    connect.textContent='Disconnect'; connect.classList.add('danger');
+    addr.value=multi.evm||multi.solana||multi.tron;
+    var e=window.ethereum||{};
+    var name=e.isTrust||e.isTrustWallet?'Trust Wallet':e.isMetaMask?'MetaMask':e.isRabby?'Rabby':'this wallet';
+    showMulti('via '+name+' (in-app)');
+    scanMulti();
+  });
+}
 connect.addEventListener('click',function(){
   if(connected){ disconnectWallet(); return; }   // the button is red "Disconnect" now
-  if(window.ethereum){
-    activeProvider=window.ethereum;
-    connect.disabled=true; wconn.innerHTML='<div class="status">Check your wallet…</div>';
-    window.ethereum.request({method:'eth_requestAccounts'}).then(function(accts){
-      connect.disabled=false; useAccounts(accts,'via browser wallet');
-    }).catch(function(e){
-      connect.disabled=false;
-      wconn.innerHTML='<div class="wc-warn">Not connected: '+esc((e&&e.message)||'cancelled')+'</div>';
-    });
-    return;
-  }
-  if(window.solana||(window.phantom&&window.phantom.solana)){ connectSolana(); return; }
-  if(window.tronWeb&&window.tronWeb.defaultAddress&&window.tronWeb.defaultAddress.base58){ connectTron(); return; }
+  if(anyInjected()){ connectInjectedAll(); return; }   // in-app browser / extensions: all chains at once
   if(WC_PID){ connectWalletConnect(); return; }
   wconn.innerHTML='<div class="wc-warn">No wallet in this browser. Open this page inside your '
     +'wallet’s built-in browser (Trust Wallet, MetaMask, Rabby), or install a wallet extension. '
@@ -439,7 +485,7 @@ function revokeSolana(b){
     +simRow(d&&d.simulation),
     'Sign in Phantom / Trust');
   document.getElementById('dosign').onclick=function(){
-    var btn=this, sol=window.solana||(window.phantom&&window.phantom.solana);
+    var btn=this, sol=solProvider();
     if(!sol && !wcHas('solana')){
       msg.innerHTML='No Solana wallet here. Open GuardBot in Phantom or Trust Wallet’s browser, or connect a Solana-capable wallet by QR.'; return; }
     msg.textContent='Loading…';
