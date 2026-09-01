@@ -51,6 +51,22 @@ def _code_version():
 
 CODE_VERSION = _code_version()
 PORT = int(os.environ.get("GUARDBOT_PORT", "8403"))
+# Loopback by default: the tool is local-first and private. GUARDBOT_HOST=0.0.0.0 opts into the
+# local network, which is what lets a phone on the same Wi-Fi open the viewer (and connect its
+# wallet's own in-app browser, where the Solana/TRON providers are injected).
+HOST = os.environ.get("GUARDBOT_HOST", "127.0.0.1")
+
+
+def _lan_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return None
 PRICE_USDC = float(os.environ.get("GUARDBOT_PRICE_USDC", "0"))
 PAY_TO = os.environ.get("GUARDBOT_PAY_TO", "")
 FACILITATOR = os.environ.get("GUARDBOT_FACILITATOR", "").rstrip("/")
@@ -359,5 +375,11 @@ if __name__ == "__main__":
           flush=True)
     print(f"  ➜  Approvals viewer:  http://127.0.0.1:{PORT}/view", flush=True)
     print(f"  ➜  API / agents:      http://127.0.0.1:{PORT}/llms.txt", flush=True)
+    if HOST not in ("127.0.0.1", "localhost"):
+        lan = _lan_ip()
+        print(f"  ➜  On this network:   http://{lan or HOST}:{PORT}/view   "
+              f"(phone on the same Wi-Fi; open it in your wallet's browser)", flush=True)
+        print("     (a firewall must allow the port: e.g. "
+              f"sudo ufw allow from 192.168.0.0/16 to any port {PORT} proto tcp)", flush=True)
     print("  (Ctrl+C to stop)\n", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    ThreadingHTTPServer((HOST, PORT), H).serve_forever()
