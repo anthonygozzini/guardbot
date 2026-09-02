@@ -324,21 +324,17 @@ class H(BaseHTTPRequestHandler):
             q = parse_qs(u.query)
             self._check((q.get("chain") or [""])[0], (q.get("address") or [""])[0])
         elif u.path == "/v1/tokencheck":
-            # first-hand verdict: we simulate buying and selling the token ourselves.
             q = parse_qs(u.query)
-            chain = (q.get("chain") or ["bsc"])[0].strip()
-            token = (q.get("address") or q.get("token") or [""])[0].strip()
-            if not token:
-                return self._json(400, {"error": "address is required"})
+            chain = (q.get("chain") or [""])[0].strip().lower()
+            token = (q.get("address") or [""])[0].strip()
+            if not chain or not token:
+                return self._json(400, {"error": "chain and address are required"})
             try:
-                if chain == "solana":
-                    self._json(200, solcheck.check_token(token))
-                elif chain == "tron":
-                    self._json(200, troncheck.check_token(token))
-                else:
-                    self._json(200, tokencheck.check_token(chain, token))
+                # same dispatch as the paid path, WITH its cache: a re-check of the same token
+                # inside the TTL paints instantly (and demo takes stop waiting on live RPCs)
+                self._json(200, cached_assess(chain, token))
             except Exception as e:
-                self._json(500, {"error": f"token check failed: {e}"})
+                self._json(500, {"error": f"tokencheck failed: {e}"})
         elif u.path == "/v1/config":
             # Frontend config. The WalletConnect projectId is a PUBLIC frontend identifier (safe
             # to expose); it's read from env so no account detail is baked into the code. Empty =
