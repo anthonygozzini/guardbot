@@ -690,7 +690,10 @@ function render(d,mode){
       +'shows up here, that means <b>we found nothing</b>, not that there is nothing. For certainty, '
       +'run <span class="mono">python3 tools/deepscan_bsc.py &lt;address&gt;</span> once: an approve is '
       +'always a transaction the owner signed, so walking the wallet\'s own transactions finds every '
-      +'classic approval by construction and stores it locally (~minutes).</div>';
+      +'classic approval by construction and stores it locally (~minutes).'
+      +(d.deepscan_started?' <b>That deep scan just started by itself in the background</b> — '
+        +'re-scan in ~5 minutes and anything it finds will be here.':'')
+      +'</div>';
   }
   if(d.partial_chains&&d.partial_chains.length){
     head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '

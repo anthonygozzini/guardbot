@@ -378,7 +378,23 @@ class H(BaseHTTPRequestHandler):
             if not addr:
                 return self._json(400, {"error": "address is required"})
             try:
-                self._json(200, approvals_mod.approvals(addr, cached_only=cached))
+                res = approvals_mod.approvals(addr, cached_only=cached)
+                # BSC has no free log history, so the live scan PROBES a mined candidate list —
+                # which can miss an unmined spender. The certainty pass (nonce-walk over the
+                # wallet's own transactions, ~5 min) is too slow for a click, so it launches
+                # itself in the background ONCE per wallet; the next scan includes its finds.
+                if (not cached and "bsc" in (res.get("probed_chains") or [])
+                        and approvals_mod._cached("bsc#deepscan", addr)[1] is None):
+                    try:
+                        import subprocess
+                        logp = os.path.join(os.path.expanduser("~"), ".guardbot", "deepscan.log")
+                        subprocess.Popen(["python3", os.path.join(BASE, "tools", "deepscan_bsc.py"), addr],
+                                         stdout=open(logp, "ab"), stderr=subprocess.STDOUT)
+                        approvals_mod._store("bsc#deepscan", addr, set(), 1)
+                        res["deepscan_started"] = ["bsc"]
+                    except Exception:
+                        pass
+                self._json(200, res)
             except Exception as e:
                 self._json(500, {"error": f"approvals lookup failed: {e}"})
         else:
