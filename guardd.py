@@ -359,6 +359,16 @@ class H(BaseHTTPRequestHandler):
                                                          g("token"), g("spender")))
             except Exception as e:
                 self._json(500, {"error": f"could not build the revoke tx: {e}"})
+        elif u.path == "/v1/detect":
+            # wallet or token? lets one paste field route itself in the viewer
+            q = parse_qs(u.query)
+            a = (q.get("address") or [""])[0].strip()
+            if not a:
+                return self._json(400, {"error": "address is required"})
+            try:
+                self._json(200, approvals_mod.detect_kind(a))
+            except Exception as e:
+                self._json(500, {"error": f"detect failed: {e}"})
         elif u.path == "/v1/approvals":
             # local-first & private: nothing is stored server-side or published. cached=1 returns
             # the local index's last result instantly (µs); otherwise a live scan (~seconds).

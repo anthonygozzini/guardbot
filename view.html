@@ -64,12 +64,18 @@ button.danger{background:var(--risk);color:#2c0f0c}
 .lvl-critical{background:#2c1613;color:var(--risk)}
 .trunc{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
 .empty{color:var(--soft);padding:24px 10px;text-align:center}
+.verdict{display:flex;align-items:center;gap:16px;margin:20px 0 12px;border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:var(--panel)}
+.verdict .vic{font-size:1.9rem;line-height:1}
+.verdict .vword{font-family:var(--mono);font-weight:700;font-size:1.25rem;letter-spacing:.06em}
+.v-safe{border-left:4px solid var(--accent)} .v-safe .vword{color:var(--accent)}
+.v-warn{border-left:4px solid var(--warn)} .v-warn .vword{color:var(--warn)}
+.v-block{border-left:4px solid var(--risk)} .v-block .vword{color:var(--risk)}
 .err{color:var(--risk);padding:14px;border:1px dashed var(--risk);border-radius:10px;background:#2c1613}
 a{color:var(--accent)}
 </style></head>
 <body><div class="wrap">
   <h1>⚡ GuardBot — Approvals Viewer</h1>
-  <p class="sub">Paste any address, see its standing token approvals across <b>EVM · TRON · Solana</b> — the chains a single revoke tool usually doesn't unify. Read-only, no wallet needed.</p>
+  <p class="sub">One field, both sides of safety, across <b>EVM · TRON · Solana</b>: paste a <b>wallet</b> to see and revoke its standing approvals, or paste a <b>token contract</b> to learn first-hand if it's a trap — a buy and a sell are actually simulated, no vendor verdicts. Read-only until you sign.</p>
   <form id="f" onsubmit="return false">
     <input id="addr" placeholder="0x… (EVM)  ·  T… (TRON)  ·  base58 (Solana)" autocomplete="off" spellcheck="false">
     <button id="connect" type="button">Connect wallet</button>
@@ -728,6 +734,43 @@ function render(d,mode){
 // the page kept reloading to /view? every scan, and the wallet state never settled.
 function runScan(){
   var a=addr.value.trim(); if(!a)return;
+  go.disabled=true; out.innerHTML='<div class="status">Looking at the address…</div>';
+  // one field, two products: a wallet gets the approvals scan, a token contract gets the
+  // safety verdict — decided first-hand by /v1/detect (code + token interface / mint / bytecode)
+  fetch('/v1/detect?address='+encodeURIComponent(a)).then(function(r){return r.json();})
+    .catch(function(){return null;}).then(function(d){
+      if(d&&d.kind==='token'){ runTokenCheck(d.chain, a); return; }
+      runApprovals(a);
+    });
+}
+function runTokenCheck(chain, a){
+  out.innerHTML='<div class="status">Token contract detected on <b>'+esc(chain)+'</b> — simulating '
+    +'a buy and a sell against live liquidity… (first-hand, ~10s)</div>';
+  fetch('/v1/tokencheck?chain='+encodeURIComponent(chain)+'&address='+encodeURIComponent(a))
+    .then(function(r){return r.json();})
+    .then(function(d){ go.disabled=false; renderVerdict(chain, a, d); })
+    .catch(function(e){ go.disabled=false;
+      out.innerHTML='<div class="err">Check failed: '+esc((e&&e.message)||'error')+'. Is the server running?</div>'; });
+}
+function renderVerdict(chain, a, d){
+  if(d&&d.error){ out.innerHTML='<div class="err">'+esc(d.error)+'</div>'; return; }
+  var v=String(d.verdict||'unknown');
+  var cls={safe:'v-safe',warn:'v-warn',block:'v-block'}[v]||'v-warn';
+  var icon={safe:'✓',warn:'⚠',block:'⛔'}[v]||'?';
+  var rows=(d.checks||[]).map(function(c){
+    var st=String(c.status||'unknown');
+    var chip={pass:'b-ok',ok:'b-ok',warn:'b-risk',fail:'b-unl'}[st]||'';
+    return '<tr><td><span class="badge '+chip+'">'+esc(st)+'</span></td>'
+      +'<td><b>'+esc(c.name||'')+'</b><div class="hint" style="margin:2px 0 0">'+esc(c.detail||'')+'</div></td></tr>';
+  }).join('');
+  out.innerHTML='<div class="verdict '+cls+'"><span class="vic">'+icon+'</span><div>'
+    +'<div class="vword">'+esc(v.toUpperCase())+'</div>'
+    +'<div class="hint" style="margin:3px 0 0">'+esc(chain)+' · <span class="mono">'+esc(short(a))+'</span>'
+    +(d.score!=null?' · score '+esc(d.score):'')
+    +' · verdict from a REAL simulated buy and sell, not a vendor API</div></div></div>'
+    +'<table><thead><tr><th style="width:92px">Check</th><th>Evidence</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+function runApprovals(a){
   go.disabled=true; out.innerHTML='<div class="status">Scanning… contacting server</div>';
   var ctl=('AbortController' in window)?new AbortController():null;
   var killer=setTimeout(function(){ if(ctl) ctl.abort(); },150000);   // no infinite "Scanning…"

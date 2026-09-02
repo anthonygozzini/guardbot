@@ -184,6 +184,63 @@ def detect_chain(address):
     return None
 
 
+def detect_kind(address):
+    """Wallet or token? One pasted string must route itself: a wallet gets the approvals scan, a
+    token contract gets the safety verdict. First-hand tells them apart — EVM: code at the
+    address plus a working decimals()+totalSupply() (a Safe has code but no token interface, so
+    it still counts as a wallet); Solana: the account is a mint owned by a token program; TRON:
+    deployed bytecode answering decimals()."""
+    kind = detect_chain(address)
+    if kind is None:
+        return {"kind": None, "error": "unrecognized address"}
+    if kind == "solana":
+        try:
+            d = _post(SOL_RPC, {"jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
+                                "params": [address, {"encoding": "jsonParsed"}]})
+        except Exception:
+            d = {}
+        val = ((d.get("result") or {}).get("value")) or {}
+        parsed = ((val.get("data") or {}).get("parsed")) or {}
+        if val.get("owner") in SPL_PROGRAMS and parsed.get("type") == "mint":
+            return {"kind": "token", "chain": "solana"}
+        return {"kind": "wallet", "chain": "solana"}
+    if kind == "tron":
+        import troncheck
+        h = troncheck.b58_to_hex(address)
+        try:
+            c = troncheck._post("/wallet/getcontract", {"value": h, "visible": False})
+        except Exception:
+            c = {}
+        if c and c.get("bytecode"):
+            if troncheck._const(h, "decimals()") is not None:
+                return {"kind": "token", "chain": "tron"}
+        return {"kind": "wallet", "chain": "tron"}
+    # EVM: probe every chain's code in parallel, then the token interface where code exists
+    def probe(item):
+        name, cfg = item
+        rpc = _chain_rpc(name, cfg)
+        try:
+            code = _rpc(rpc, "eth_getCode", [address, "latest"])
+            if not code or code == "0x":
+                return None
+            dec = _rpc(rpc, "eth_call", [{"to": address, "data": "0x313ce567"}, "latest"])
+            sup = _rpc(rpc, "eth_call", [{"to": address, "data": "0x18160ddd"}, "latest"])
+            if dec and dec != "0x" and sup and sup != "0x":
+                return (name, "token")
+            return (name, "contract")
+        except Exception:
+            return None
+    hits = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVM_CFG)) as ex:
+        for r in ex.map(probe, list(EVM_CFG.items())):
+            if r:
+                hits.append(r)
+    tokens = [n for n, k in hits if k == "token"]
+    if tokens:
+        return {"kind": "token", "chain": tokens[0], "chains": tokens}
+    return {"kind": "wallet", "chain": "evm"}
+
+
 # ---------------- EVM: read Approval events + current allowance (revoke.cash method) --------
 def _rpc(url, method, params):
     body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
