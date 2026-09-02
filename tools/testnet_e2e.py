@@ -43,7 +43,8 @@ TRON_NET = os.environ.get("GUARDBOT_TRON_NETWORK", "nile")
 TRON_USDT = {"nile": "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",          # Nile test USDT
              "shasta": "TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs"}[TRON_NET]   # Shasta test USDT (symbol() verified)
 TRON_EXPLORER = {"nile": "https://nile.tronscan.org", "shasta": "https://shasta.tronscan.org"}[TRON_NET]
-TRON_SPENDER = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"   # the TRON black hole — obviously not a real spender
+# spender: a SECOND throwaway address derived from our own key (priv^1). The black hole was
+# rejected on-chain: it is the zero address, and standard TRC-20 approve() reverts on it.
 
 
 # ---------------- ed25519 (RFC 8032), pure stdlib ----------------
@@ -370,16 +371,18 @@ def tron_leg():
     assert "nile" in TRONGRID or "shasta" in TRONGRID, "refusing: not a TRON testnet"
     priv = int.from_bytes(_keyfile("e2e_tron.seed", 32), "big") % _SN
     addr, addr_hex = tron_addr(priv)
+    spender_addr, _spd_hex_full = tron_addr(priv ^ 1)
     print(f"throwaway owner: {addr}   (network: {TRONGRID})")
     acct = _post_json(f"{TRONGRID}/wallet/getaccount", {"address": addr_hex, "visible": False})
     if not acct or "balance" not in acct:
         faucet = "https://nileex.io/join/getJoinPage" if TRON_NET == "nile" else "https://shasta.tronex.io"
         print(f"NOT FUNDED yet. Get free test TRX at {faucet} for:\n  {addr}\nthen re-run.")
         return 1
-    print(f"balance: {acct['balance']/1e6:.2f} TRX (Nile — no value)")
+    print(f"balance: {acct['balance']/1e6:.2f} TRX ({TRON_NET} — no value)")
 
     tok_hex = solmeta.b58decode(TRON_USDT)[:21].hex()
-    spd_hex = solmeta.b58decode(TRON_SPENDER)[:21].hex()
+    spd_hex = solmeta.b58decode(spender_addr)[:21].hex()
+    print(f"test spender (second throwaway): {spender_addr}")
 
     def call(amount):
         b = _post_json(f"{TRONGRID}/wallet/triggersmartcontract",
