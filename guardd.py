@@ -171,7 +171,17 @@ def cached_assess(chain, address):
         hit = CACHE.get(key)
         if hit and now - hit[0] < CACHE_TTL:
             return hit[1]
-    verdict = guard.assess(chain, address)
+    # the paid endpoint must serve the BEST engine — the same first-hand dispatch as
+    # /v1/tokencheck; the legacy third-party wrapper only covers chains our engines don't
+    c = chain.lower()
+    if c == "solana":
+        verdict = solcheck.check_token(address)
+    elif c == "tron":
+        verdict = troncheck.check_token(address)
+    elif c in tokencheck.RPCS:
+        verdict = tokencheck.check_token(c, address)
+    else:
+        verdict = guard.assess(chain, address)
     with LOCK:
         CACHE[key] = (now, verdict)
         STATS["checks"] += 1

@@ -357,10 +357,20 @@ Free endpoints: `GET /llms.txt` (agent onboarding), `GET /v1/status`.
 Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalanche`.
 
 ## Payment model
-- **Free** (default): usable right away, for demos.
-- **Per-call x402-USDC**: micro-fee per check, like GoPlus's agent pay-as-you-go. Real
-  enforcement (facilitator `/verify` + `/settle`); if the facilitator isn't configured,
-  paid requests are rejected — never a false "paid".
+The code is free for everyone, forever: clone it, run it, pay nothing — that is the point of a
+local-first tool. Payment only exists for a **hosted** deployment (someone running GuardBot on a
+public URL for software that can't self-host):
+- **Free** (default): every endpoint open — the mode this repo ships in.
+- **Per-call x402-USDC** (built, tested, off by default): a bot or AI agent calling a hosted
+  endpoint gets HTTP 402 with the price, pays from its own wallet through an x402 facilitator
+  (`/verify` + `/settle`, replay-guarded), and receives the verdict — the same pay-as-you-go
+  model wallets and Telegram trading bots already buy from token-safety APIs. If the
+  facilitator isn't configured, paid requests are rejected — never a false "paid". The paid
+  endpoint serves the same first-hand engines as the free one.
+- Humans never pay for safety here: no fee on viewing, none on revoking (an `approve(spender,0)`
+  moves no value — there is nowhere for a fee to live, and charging for the fire exit is wrong).
+  If a swap step ever ships, it would carry a standard partner fee inside the swap transaction,
+  the way wallets monetize — never the safety actions.
 
 ## Status
 - [x] First-hand safety engines: EVM buy-and-sell simulation (`tokencheck.py`) and Solana
