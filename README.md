@@ -411,8 +411,10 @@ public URL for software that can't self-host):
       and tested for exactly that) — the tool itself stays local-first and free.
 
 ## References
-- GoPlus Security API — https://docs.gopluslabs.io/reference/api-overview
-- x402 — https://github.com/x402-foundation/x402
-- VibeKit — https://vibekit.ai/
+- x402 payment protocol (the spec this repo's payment rail implements) —
+  https://github.com/x402-foundation/x402
+- GoPlus address_security — https://docs.gopluslabs.io/reference/api-overview — used ONLY as an
+  extra reputation hint on spender addresses and as the legacy fallback for chains our own
+  engines don't cover; a token verdict is always produced first-hand, never from a vendor.
 
 This is a safety signal on public data, not financial advice.
