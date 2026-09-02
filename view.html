@@ -760,13 +760,22 @@ function renderVerdict(chain, a, d){
   var rows=(d.checks||[]).map(function(c){
     var st=String(c.status||'unknown');
     var chip={pass:'b-ok',ok:'b-ok',warn:'b-risk',fail:'b-unl'}[st]||'';
+    var ev=c.evidence&&Object.keys(c.evidence).length
+      ? '<div class="mono" style="font-size:.72rem;color:var(--faint,#6f767e);margin-top:3px">'
+        +Object.keys(c.evidence).slice(0,6).map(function(k){var x=String(c.evidence[k]);
+          return esc(k)+'='+esc(x.length>44?x.slice(0,44)+'…':x);}).join('  ·  ')+'</div>'
+      : '';
     return '<tr><td><span class="badge '+chip+'">'+esc(st)+'</span></td>'
-      +'<td><b>'+esc(c.name||'')+'</b><div class="hint" style="margin:2px 0 0">'+esc(c.detail||'')+'</div></td></tr>';
+      +'<td><b>'+esc(c.name||'')+'</b><div class="hint" style="margin:2px 0 0">'+esc(c.detail||'')+'</div>'+ev+'</td></tr>';
   }).join('');
+  var EXPL={bsc:'https://bscscan.com/token/',ethereum:'https://etherscan.io/token/',base:'https://basescan.org/token/',
+    arbitrum:'https://arbiscan.io/token/',polygon:'https://polygonscan.com/token/',optimism:'https://optimistic.etherscan.io/token/',
+    tron:'https://tronscan.org/#/token20/',solana:'https://solscan.io/token/'};
   out.innerHTML='<div class="verdict '+cls+'"><span class="vic">'+icon+'</span><div>'
-    +'<div class="vword">'+esc(v.toUpperCase())+'</div>'
+    +'<div class="vword">'+esc(v.toUpperCase())+(d.symbol?' <span class="hint" style="display:inline;font-size:.95rem">· '+esc(d.symbol)+'</span>':'')+'</div>'
     +'<div class="hint" style="margin:3px 0 0">'+esc(chain)+' · <span class="mono">'+esc(short(a))+'</span>'
     +(d.score!=null?' · score '+esc(d.score):'')
+    +(EXPL[chain]?' · <a href="'+esc(EXPL[chain]+a)+'" target="_blank" rel="noopener">explorer ↗</a>':'')
     +' · verdict from a REAL simulated buy and sell, not a vendor API</div></div></div>'
     +'<table><thead><tr><th style="width:92px">Check</th><th>Evidence</th></tr></thead><tbody>'+rows+'</tbody></table>';
 }

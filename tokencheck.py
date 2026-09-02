@@ -27,6 +27,7 @@ import os
 import urllib.error
 import urllib.request
 
+import homoglyphs
 from keccak import keccak256, selector
 
 UA = "Mozilla/5.0 (guardbot/0.1; token safety; read-only)"
@@ -677,8 +678,20 @@ def check_token(chain, token, rpcs=None):
 
     nat = liq.get("native_reserve")
     sym = _symbol_of(url, token)
-    ident = _identity(chain, token, sym, nat)
-    if ident and not ident.get("canonical"):
+    # a ticker written in Latin-LOOKALIKE characters is a disguise by construction: fold it first,
+    # judge identity on what it READS as, and fail it outright — honeypot.is showed PASSED on one
+    # of these because the mechanics were clean; the scam was the name.
+    sym_sk, spoofed = homoglyphs.disguised(sym) if sym else (sym, False)
+    ident = _identity(chain, token, sym_sk if spoofed else sym, nat)
+    if spoofed:
+        leader = (ident or {}).get("leader")
+        add("identity", "fail",
+            f"the ticker only LOOKS like '{sym_sk}' — it is written with lookalike characters "
+            f"('{sym}'), a disguise no honest token needs"
+            + (f"; the real '{sym_sk}' the market trades sits at {leader[:10]}…" if leader else ""),
+            80, {"symbol_shown": sym, "symbol_reads_as": sym_sk, "spoofed": True,
+                 **({"impersonates": leader} if leader else {})})
+    elif ident and not ident.get("canonical"):
         if ident.get("ambiguous"):
             add("identity", "warn",
                 f"{ident['claimants']} different contracts on this chain call themselves "
@@ -762,7 +775,7 @@ def check_token(chain, token, rpcs=None):
     # being blocked purely for having a proxy, an owner and unburned LP.
     verdict = "block" if fails else ("warn" if score < 75 else "safe")
     return {"chain": chain, "token": token, "verdict": verdict, "score": score,
-            "checks": checks,
+            "symbol": sym, "checks": checks,
             "simulation": {k: (str(v) if isinstance(v, int) and abs(v) > 2**53 else v)
                            for k, v in sim.items() if k != "error"},
             "engine": "guardbot-tokencheck/0.1 (first-hand simulation, no third-party API)"}

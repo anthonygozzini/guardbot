@@ -29,6 +29,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import approvals
+import homoglyphs
 import revoke
 import tokencheck
 from keccak import keccak256, selector, topic
@@ -382,6 +383,33 @@ class TestPermit2Decoder(unittest.TestCase):
             self.assertEqual(approvals._permit2_allowance("u", "o", "t", "s"), (0, 0))
 
 
+class TestHomoglyphs(unittest.TestCase):
+    """A ticker written in Latin-lookalike characters must fold to what it READS as: on BSC a
+    live scam renders as USDT via Armenian/Lisu/Roman-numeral glyphs, and honeypot.is shows it
+    PASSED because the mechanics are clean — the disguise is the whole scam."""
+
+    def test_real_scam_ticker_folds_to_usdt(self):
+        sk, spoofed = homoglyphs.disguised("\u054d\u054f\u216e\ua4d4")
+        self.assertEqual(sk, "USDT")
+        self.assertTrue(spoofed)
+
+    def test_name_folds_too(self):
+        sk, spoofed = homoglyphs.disguised("\ua4d4\u0435ther \u054d\u054f\u216e")
+        self.assertEqual(sk, "Tether USD")
+        self.assertTrue(spoofed)
+
+    def test_honest_tickers_are_untouched(self):
+        for s in ("USDT", "WETH", "\u30e2\u30ca\u30fc"):
+            sk, spoofed = homoglyphs.disguised(s)
+            self.assertEqual(sk, s)
+            self.assertFalse(spoofed)
+
+    def test_single_lookalike_character_is_enough(self):
+        sk, spoofed = homoglyphs.disguised("USD\u0422")
+        self.assertEqual(sk, "USDT")
+        self.assertTrue(spoofed)
+
+
 class TestImpersonationRule(unittest.TestCase):
     """A ticker can be shared by real tokens or stolen by a fake. The difference is whether the
     accused has a market of its own — not the size ratio alone."""
@@ -531,7 +559,8 @@ class TestLiveTokenSafety(unittest.TestCase):
     HONEYPOTS = ["0xb7fe3b77432fe4fc245f700df846f57511cf84a7",
                  "0x67c91d04728ffcda058d86c33f7ba6f899aae3a9",
                  "0x760884305acadc6ac243572f49e763a63f9a7afa"]
-    FAKE_USDT = ["0xa31f198088fbd75ecd8700f989587d413a1b8888",
+    FAKE_USDT = ["0xbEC0209f3fe563f6726F7BEE38d72d57fd758888",   # homoglyph "USDT" — honeypot.is says PASSED
+                 "0xa31f198088fbd75ecd8700f989587d413a1b8888",
                  "0x31c2a17ea816833ebb3df383f6b6d7895ba04e7b"]
 
     def test_real_tokens_are_never_blocked(self):

@@ -128,6 +128,14 @@ with our own `keccak.py`, since Python ships SHA3-256, which is not keccak256.
 
 ### The name on the tin proves nothing
 
+The disguise can even be typographic: a live BSC scam's ticker renders as USDT but is written
+in Armenian, Lisu and Roman-numeral lookalikes — string comparison sees a brand-new symbol, and
+honeypot.is shows it PASSED (the mechanics are clean; the name is the scam). GuardBot folds
+Latin-lookalike characters first (`homoglyphs.py`, NFKC + a curated confusables map), judges
+identity on what the ticker READS as, and fails the disguise itself: no honest token needs one.
+An honest non-Latin name (katakana, CJK) folds to itself and is never flagged.
+
+
 `symbol()` is whatever the contract says about itself, and it is free to lie. Among 1209 real,
 actually-approved BSC tokens, **four different contracts call themselves "USDT"** — one real,
 three impersonating it, and people had approved the fakes. Any tool that prints the self-declared

@@ -1395,6 +1395,17 @@ def _flag_impersonation(items):
         sym = (it.get("token_symbol") or "").strip()
         if not sym:
             continue
+        import homoglyphs
+        sk, spoofed = homoglyphs.disguised(sym)
+        if spoofed:
+            # lookalike characters = a disguise by construction, registry match or not
+            it["symbol_verified"] = False
+            it["symbol_spoofed"] = True
+            it["symbol_reads_as"] = sk
+            ent = _registry(it["chain"]).get(sk.upper())
+            if ent:
+                it["impersonates"] = ent[0][0]
+            continue
         entries = _registry(it["chain"]).get(sym.upper())
         if not entries:
             continue
