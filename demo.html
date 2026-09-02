@@ -142,12 +142,14 @@ function hideAll(){['working','p1','p2','pconn','p3','end'].forEach(function(i){
 (function(){var c=document.getElementById('qr').getContext('2d');c.fillStyle='#0b0d10';
 for(var y=0;y<15;y++)for(var x=0;x<15;x++){if((x<4&&y<4)||(x>10&&y<4)||(x<4&&y>10)||Math.random()<.42)c.fillRect(6+x*7.2,6+y*7.2,6,6);}})();   // decorative pattern, deliberately not scannable
 function caption(t){if(!t){cap.classList.remove('on');return;}cap.innerHTML=t;cap.classList.add('on');}
-function type(text,done){typed.textContent='';var i=0;var iv=setInterval(function(){typed.textContent=text.slice(0,++i);if(i>=text.length){clearInterval(iv);done&&done();}},22);}
+function type(text,done){if(JUMP!=null){typed.textContent=text;done&&done();return;}typed.textContent='';var i=0;var iv=setInterval(function(){typed.textContent=text.slice(0,++i);if(i>=text.length){clearInterval(iv);done&&done();}},22);}
 function press(){scanBtn.classList.remove('flash');void scanBtn.offsetWidth;scanBtn.classList.add('flash');}
-var T=[], t0;
-function at(ms,fn){T.push(setTimeout(fn,ms));}
+var JUMP=null; try{var _q=new URLSearchParams(location.search).get('t'); if(_q!=null) JUMP=parseInt(_q,10);}catch(e){}
+if(JUMP!=null){var st=document.createElement('style');st.textContent='*{transition:none!important;animation:none!important}';document.head.appendChild(st);}
+var T=[], STEPS=[], t0;
+function at(ms,fn){ if(JUMP!=null){STEPS.push([ms,fn]);} else {T.push(setTimeout(fn,ms));} }
 function run(){
-  T.forEach(clearTimeout);T=[];hideAll();caption('');typed.textContent='';
+  T.forEach(clearTimeout);T=[];STEPS=[];hideAll();caption('');typed.textContent='';
   t0=Date.now();prog.style.transition='none';prog.style.width='0%';
   setTimeout(function(){prog.style.transition='width 35s linear';prog.style.width='100%';},60);
   at(300,function(){type('0xbEC0209f3fe563f6726F7BEE38d72d57fd758888');});
@@ -166,6 +168,8 @@ function run(){
     document.getElementById('sign').style.display='block';
     caption('Every revoke is <b>proven on-chain before you sign</b> — simulated, permission read back at zero.<br>Read-only until you sign. Your wallet, your call.');});
   at(34500,function(){hideAll();caption('');show('end',true);});
+  if(JUMP!=null){ STEPS.forEach(function(st){ if(st[0]<=JUMP) st[1](); });
+    prog.style.transition='none'; prog.style.width=Math.min(100, JUMP/350)+'%'; }
 }
 document.getElementById('replay').onclick=run;
 run();

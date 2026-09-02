@@ -1,5 +1,8 @@
 # GuardBot ⚡ — pre-trade safety for agents & bots
 
+<p align="center"><a href="https://anthonygozzini.github.io/guardbot/demo.html"><img src="assets/demo.gif" alt="35-second demo: a block verdict with evidence on a homoglyph impostor token, an honest safe on real USDT with measured numbers, a one-QR three-chain wallet connection, and an on-chain-simulated revoke" width="820"></a></p>
+<p align="center"><b><a href="https://anthonygozzini.github.io/guardbot/demo.html">▶ Interactive 35-second demo</a></b> — real recorded runs, reproducible from this repo.</p>
+
 Before you buy a token: **is it a rug / honeypot / trap?** GuardBot answers first-hand — it
 simulates buying the token and selling it back against live liquidity — and returns **one
 verdict**, `safe | warn | block`, **with the evidence**. It never routes trades or touches
