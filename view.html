@@ -687,7 +687,10 @@ function render(d,mode){
       +'<b>'+esc(d.probed_chains.join(', '))+'</b>: this chain publishes no free history, so instead of '
       +'reading your past we check your current permissions directly, one by one, widening the search '
       +'around everything we find. It matched the block explorer on our test wallet — but if nothing '
-      +'shows up here, that means <b>we found nothing</b>, not that there is nothing.</div>';
+      +'shows up here, that means <b>we found nothing</b>, not that there is nothing. For certainty, '
+      +'run <span class="mono">python3 tools/deepscan_bsc.py &lt;address&gt;</span> once: an approve is '
+      +'always a transaction the owner signed, so walking the wallet\'s own transactions finds every '
+      +'classic approval by construction and stores it locally (~minutes).</div>';
   }
   if(d.partial_chains&&d.partial_chains.length){
     head+='<div class="err" style="border-color:var(--warn);background:#2a1f0f;color:var(--warn)">⚠ '

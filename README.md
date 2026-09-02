@@ -374,7 +374,10 @@ Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalan
 - [x] Own multi-chain scanner: nonce-skip + adaptive parallel `getLogs` + local incremental
       index (µs cached paint → ~2s live), partial ranges surfaced, never silently dropped.
 - [x] BSC covered with **no** log history and **no** paid provider: Multicall3 present-probing over
-      a chain-mined candidate universe (96.6% coverage, 3/3 ground-truth approvals recovered).
+      a chain-mined candidate universe — plus `tools/deepscan_bsc.py` for certainty: an approve is
+      always a transaction the owner signed, so binary-searching the wallet's nonce history over an
+      archive RPC recovers every classic approval by construction (verified: a wallet whose 5
+      approvals to an unmined spender probing missed now matches revoke.cash to the decimal).
 - [x] Revoke on all three chains, **proven landed**: EVM calldata signed on mainnet (allowance
       re-read zero), Solana `Revoke` and TRC-20 `approve(spender,0)` signed on the testnets by
       our own stdlib ed25519/secp256k1 signer (`tools/testnet_e2e.py`) — plus node-side
