@@ -27,7 +27,7 @@ That's it. From the CLI instead:
 python3 approvals.py  0x4E2A45E432E3EAC7F273f0eBEb8D1DaF8C59098A   # what has a wallet handed out?
 python3 tokencheck.py bsc 0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82  # is this token a trap?
 python3 solcheck.py   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v   # Solana token safety
-python3 -m unittest discover -s tests                              # 27 unit tests, ~5ms, prove it
+python3 -m unittest discover -s tests                              # 51 offline tests, ~0.3s, prove it
 ```
 
 Point an agent at it as an **MCP tool** (Claude Desktop / Claude Code / VibeKit):
@@ -37,11 +37,13 @@ Point an agent at it as an **MCP tool** (Claude Desktop / Claude Code / VibeKit)
 ```
 It exposes `check_token(chain, address)` and `check_approvals(address)`.
 
-**Connect a wallet** (to skip pasting an address, and to sign revokes): the viewer uses your
-injected wallet — a desktop extension, or your wallet's in-app browser on mobile (Trust Wallet,
-MetaMask, Rabby) — with nothing to install. To connect *any* mobile wallet by QR from a normal
-browser, start the daemon with a free WalletConnect projectId (its SDK then loads lazily, only
-when used, so the default page stays dependency-free):
+**Connect a wallet** (to skip pasting an address, and to sign revokes): with a free WalletConnect
+projectId, one QR — or one tap inside the wallet's in-app browser — opens a single session for
+**every chain the wallet supports at once** (EVM + Solana + TRON namespaces), the same entry you
+see and can end in the wallet's own WalletConnect list; the banner states the connection type and
+the chains the wallet actually approved, read from the session. Without a projectId the viewer
+falls back to the injected providers. The SDK loads lazily, only when used, so the default page
+stays dependency-free:
 ```bash
 GUARDBOT_WC_PROJECT_ID=<your id from cloud.reown.com> python3 guardd.py
 ```
@@ -189,8 +191,10 @@ curl "http://127.0.0.1:8403/v1/tokencheck?chain=bsc&address=0x<token>"
 
 ### Testing the Solana / TRON revoke signing without spending anything
 
-Nobody tests signing with real money: use the testnets. Start the daemon in testnet mode and
-open the test-grants page with throwaway wallets (Phantom in *Testnet mode*, TronLink on *Nile*):
+Nobody tests signing with real money: use the testnets. This has been RUN, and the revokes are
+proven landed — Solana testnet txs `36NkcShQ…`/`56ajb3Jh…` (delegate set, then gone) and Shasta
+txs `6735f9d9…`/`e4bfa007…` (allowance 1, then 0), each effect re-read first-hand. To reproduce,
+start the daemon in testnet mode (the viewer then wears a TESTNET chip):
 
 ```
 GUARDBOT_SOLANA_RPC=https://api.devnet.solana.com GUARDBOT_TRON_NETWORK=nile GUARDBOT_DEV_SEED=1 python3 guardd.py
@@ -207,16 +211,17 @@ Nile) — never for unmaintained browser extensions. The viewer shows a TESTNET 
 EVM chains stay mainnet. GuardBot itself never builds an approval.
 
 ```bash
-python3 -m unittest discover -s tests          # 27 unit tests, no network, ~5ms
-GUARDBOT_LIVE=1 python3 -m unittest discover -s tests   # + 8 live tests against real tokens
+python3 -m unittest discover -s tests          # 51 offline tests, no network, ~0.3s
+GUARDBOT_LIVE=1 python3 -m unittest discover -s tests   # + 19 live tests against real chains
 ```
 The unit tests pin the places where a silent mistake becomes a false verdict — hashing, ABI
 codec, scoring, the impersonation rule, the Permit2 decoder, the canary — and several are
 regressions for bugs that actually shipped here: a transient node error branding USDT a
 honeypot, soft warnings accumulating into a hard block, a V2-only depth measurement calling
 native USDC illiquid, and our own 1% sell margin being reported as the token's tax. The live
-tests assert that real tokens are never blocked and that known honeypots and fake USDT always
-are. 35/35 pass.
+tests assert that real tokens are never blocked, known honeypots and fake USDT always are,
+and that every revoke kind provably removes its grant — EVM by eth_simulateV1 against live
+mainnet grants, Solana and TRON by node-side simulation of the fixture wallets' real grants.
 
 ## Components
 - `guard.py` — legacy third-party wrapper (GoPlus/RugCheck). Superseded by `tokencheck.py`
@@ -362,8 +367,17 @@ Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalan
       index (µs cached paint → ~2s live), partial ranges surfaced, never silently dropped.
 - [x] BSC covered with **no** log history and **no** paid provider: Multicall3 present-probing over
       a chain-mined candidate universe (96.6% coverage, 3/3 ground-truth approvals recovered).
-- [x] Revoke: exact calldata for the three revoking calls, signed by your own wallet or
-      exported to a hardware/offline signer (`revoke.py`, `/v1/revoke`).
+- [x] Revoke on all three chains, **proven landed**: EVM calldata signed on mainnet (allowance
+      re-read zero), Solana `Revoke` and TRC-20 `approve(spender,0)` signed on the testnets by
+      our own stdlib ed25519/secp256k1 signer (`tools/testnet_e2e.py`) — plus node-side
+      simulation shown in the viewer before every signature (`revoke.py`, `/v1/revoke`).
+- [x] Wallet connect: one WalletConnect session for EVM + Solana + TRON together (QR or in-app
+      deep link), connection type and approved chains shown from the session itself; injected
+      fallback; Disconnect ends the session on the wallet side too.
+- [x] Revoke lifecycle in the viewer: Pending → on-chain receipt watch → "Revoked ✓" →
+      auto re-scan; the table only ever changes on first-hand reads.
+- [x] Base log history via Blockscout (free, keyless) with honest fast fallback; Etherscan
+      calls throttled under its rate limit; token symbols fall back to the local mined registry.
 - [x] Freshness: mined data is timestamped, its age is reported, `tools/refresh.py` re-mines all.
 - [x] TRON token safety (`troncheck.py`): bytecode scan for seize/blacklist/mint powers, read
       first-hand from the TRON node — no vendor verdict.
