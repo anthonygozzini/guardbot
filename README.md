@@ -405,9 +405,10 @@ public URL for software that can't self-host):
 - [x] Freshness: mined data is timestamped, its age is reported, `tools/refresh.py` re-mines all.
 - [x] TRON token safety (`troncheck.py`): bytecode scan for seize/blacklist/mint powers, read
       first-hand from the TRON node — no vendor verdict.
-- [ ] Packaging / hosted demo — it is a local repo today.
-- [ ] VibeKit plug-in packaging + example agent.
-- [ ] Multi-chain expansion + latency SLA.
+- [x] The demo greets you at the door: an animated GIF atop this README and the interactive
+      35-second demo hosted on GitHub Pages — real recorded runs, reproducible from this repo.
+- [ ] Optional, by choice rather than omission: a hosted public endpoint (the x402 rail is built
+      and tested for exactly that) — the tool itself stays local-first and free.
 
 ## References
 - GoPlus Security API — https://docs.gopluslabs.io/reference/api-overview
