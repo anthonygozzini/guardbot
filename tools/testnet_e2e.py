@@ -39,7 +39,10 @@ TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 DEVNET_USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-NILE_USDT = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
+TRON_NET = os.environ.get("GUARDBOT_TRON_NETWORK", "nile")
+TRON_USDT = {"nile": "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",          # Nile test USDT
+             "shasta": "TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs"}[TRON_NET]   # Shasta test USDT (symbol() verified)
+TRON_EXPLORER = {"nile": "https://nile.tronscan.org", "shasta": "https://shasta.tronscan.org"}[TRON_NET]
 TRON_SPENDER = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"   # the TRON black hole — obviously not a real spender
 
 
@@ -370,11 +373,12 @@ def tron_leg():
     print(f"throwaway owner: {addr}   (network: {TRONGRID})")
     acct = _post_json(f"{TRONGRID}/wallet/getaccount", {"address": addr_hex, "visible": False})
     if not acct or "balance" not in acct:
-        print(f"NOT FUNDED yet. Get free test TRX at https://nileex.io/join/getJoinPage for:\n  {addr}\nthen re-run.")
+        faucet = "https://nileex.io/join/getJoinPage" if TRON_NET == "nile" else "https://shasta.tronex.io"
+        print(f"NOT FUNDED yet. Get free test TRX at {faucet} for:\n  {addr}\nthen re-run.")
         return 1
     print(f"balance: {acct['balance']/1e6:.2f} TRX (Nile — no value)")
 
-    tok_hex = solmeta.b58decode(NILE_USDT)[:21].hex()
+    tok_hex = solmeta.b58decode(TRON_USDT)[:21].hex()
     spd_hex = solmeta.b58decode(TRON_SPENDER)[:21].hex()
 
     def call(amount):
@@ -393,7 +397,7 @@ def tron_leg():
         if not r.get("result"):
             print("  broadcast failed:", json.dumps(r)[:200])
             return None
-        print(f"  tx {tx['txID']}\n  https://nile.tronscan.org/#/transaction/{tx['txID']}")
+        print(f"  tx {tx['txID']}\n  {TRON_EXPLORER}/#/transaction/{tx['txID']}")
         for _ in range(20):
             time.sleep(3)
             info = _post_json(f"{TRONGRID}/wallet/gettransactionbyid", {"value": tx["txID"], "visible": False})
