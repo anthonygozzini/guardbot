@@ -246,6 +246,7 @@ def _confirm_sol(sig, tries=30):
 # ---------------- Solana devnet leg ----------------
 def solana_leg():
     assert "devnet" in SOL_RPC or "testnet" in SOL_RPC, "refusing: GUARDBOT_SOLANA_RPC is not a testnet"
+    cluster = "devnet" if "devnet" in SOL_RPC else "testnet"
     seed = _keyfile("e2e_solana.seed", 32)
     pub, _, _ = ed_keys(seed)
     owner = solmeta.b58encode(pub)
@@ -268,8 +269,19 @@ def solana_leg():
             return 1
     print(f"balance: {bal/1e9:.4f} SOL (devnet — no value)")
 
-    mint_b = solmeta.b58decode(DEVNET_USDC)
     token_b = solmeta.b58decode(TOKEN_PROGRAM)
+    # the well-known USDC test mint lives on devnet only; on any cluster where it is absent the
+    # proof gets MORE first-hand, not less: we create a throwaway mint of our own (second signer)
+    usdc_info = ((sol_rpc("getAccountInfo", [DEVNET_USDC, {"encoding": "base64"}])
+                  .get("result") or {}).get("value")) or {}
+    have_usdc = usdc_info.get("owner") == TOKEN_PROGRAM   # must BE a mint, not merely exist
+    if have_usdc:
+        mint, mint_seed = DEVNET_USDC, None
+    else:
+        mint_seed = _keyfile("e2e_solana_mint.seed", 32)
+        mint = solmeta.b58encode(ed_keys(mint_seed)[0])
+        print(f"USDC test mint absent on {cluster} — using our own throwaway mint {mint}")
+    mint_b = solmeta.b58decode(mint)
     system_b = solmeta.b58decode(SYSTEM_PROGRAM)
     ata_prog_b = solmeta.b58decode(ATA_PROGRAM)
     ata, _bump = solmeta.find_program_address([pub, token_b, mint_b], ATA_PROGRAM)
@@ -283,43 +295,58 @@ def solana_leg():
             msg += bytes([prog_ix]) + _cu16(len(accs)) + bytes(accs) + _cu16(len(data)) + data
         return msg
 
-    def send(msg):
-        tx = _cu16(1) + ed_sign(seed, msg) + msg
-        r = sol_rpc("sendTransaction", [base64.b64encode(tx).decode(), {"encoding": "base64"}])
+    def send(msg, signers):
+        tx = _cu16(len(signers)) + b"".join(ed_sign(sd, msg) for sd in signers) + msg
+        r = sol_rpc("sendTransaction", [base64.b64encode(tx).decode(),
+                                        {"encoding": "base64", "preflightCommitment": "confirmed"}])
+        # default preflight is "finalized": an account created one tx earlier (only "confirmed")
+        # does not exist in that view yet, and the ATA create failed with IncorrectProgramId
         if "error" in r:
             print("  send error:", json.dumps(r["error"])[:300])
             return None
         sig = r.get("result")
         err = _confirm_sol(sig)
-        print(f"  tx {sig}\n  https://explorer.solana.com/tx/{sig}?cluster=devnet\n  confirmed, err={err}")
+        print(f"  tx {sig}\n  https://explorer.solana.com/tx/{sig}?cluster={cluster}\n  confirmed, err={err}")
         return None if err else sig
 
     def delegate_state():
-        info = sol_rpc("getAccountInfo", [ata, {"encoding": "jsonParsed"}])
+        info = sol_rpc("getAccountInfo", [ata, {"encoding": "jsonParsed", "commitment": "confirmed"}])
         v = ((info.get("result") or {}).get("value") or {})
         pi = (((v.get("data") or {}).get("parsed") or {}).get("info") or {})
         return pi.get("delegate"), (pi.get("delegatedAmount") or {}).get("amount")
 
-    bh = ((sol_rpc("getLatestBlockhash", [{"commitment": "finalized"}]).get("result") or {})
-          .get("value") or {}).get("blockhash")
+    def blockhash():
+        return ((sol_rpc("getLatestBlockhash", [{"commitment": "finalized"}]).get("result") or {})
+                .get("value") or {}).get("blockhash")
+
+    if mint_seed is not None and not ((sol_rpc("getAccountInfo", [mint, {"encoding": "base64"}])
+                                       .get("result") or {}).get("value")):
+        rent = (sol_rpc("getMinimumBalanceForRentExemption", [82]).get("result")) or 1461600
+        print("\n[0/2] creating the throwaway mint (two signatures: owner pays, mint account signs)…")
+        # keys: 0 owner(s,w) 1 mint(s,w) | ro: 2 system 3 token
+        mkeys = [pub, ed_keys(mint_seed)[0], solmeta.b58decode(SYSTEM_PROGRAM), token_b]
+        create = (0).to_bytes(4, "little") + int(rent).to_bytes(8, "little") + (82).to_bytes(8, "little") + token_b
+        init2 = bytes([20, 0]) + pub + bytes([0])       # InitializeMint2, decimals 0, no freeze
+        msg = build(mkeys, [2, 0, 2], [(2, [0, 1], create), (3, [1], init2)], blockhash())
+        if send(msg, [seed, mint_seed]) is None:
+            return 1
+
     # keys: 0 owner(s,w) 1 ata(w) | ro: 2 mint 3 system 4 token 5 ata_prog
     keys = [pub, ata_b, mint_b, system_b, token_b, ata_prog_b]
     print("\n[1/2] create token account (idempotent) + approve 1 unit to the test delegate…")
     msg = build(keys, [1, 0, 4],
                 [(5, [0, 1, 0, 2, 3, 4], bytes([1])),                       # create ATA (idempotent)
                  (4, [1, 3, 0], bytes([4]) + (1).to_bytes(8, "little"))],   # approve(delegate=system, 1)
-                bh)
-    if send(msg) is None:
+                blockhash())
+    if send(msg, [seed]) is None:
         return 1
     d, amt = delegate_state()
     print(f"  first-hand read: delegate={d} amount={amt}")
     assert d == SYSTEM_PROGRAM and amt == "1", "delegate not set as expected"
 
     print("\n[2/2] REVOKE — the exact instruction GuardBot builds…")
-    bh = ((sol_rpc("getLatestBlockhash", [{"commitment": "finalized"}]).get("result") or {})
-          .get("value") or {}).get("blockhash")
-    msg = build([pub, ata_b, token_b], [1, 0, 1], [(2, [1, 0], bytes([5]))], bh)
-    if send(msg) is None:
+    msg = build([pub, ata_b, token_b], [1, 0, 1], [(2, [1, 0], bytes([5]))], blockhash())
+    if send(msg, [seed]) is None:
         return 1
     d, amt = delegate_state()
     print(f"  first-hand read: delegate={d}")
