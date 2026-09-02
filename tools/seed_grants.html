@@ -19,7 +19,7 @@ approves — this page lives outside the product and is served only with <span c
 <div id="cfg" class="hint">reading daemon config…</div>
 
 <div class="box"><h2>Solana devnet</h2>
-  <div class="hint">Needs a Solana wallet on devnet: Solflare (Firefox/Chrome extension, switch network to Devnet) or the Phantom app (Testnet mode). Creates the USDC-devnet token account if missing
+  <div class="hint">Manual route (optional): the Phantom app on iOS/Android — the platforms Phantom officially supports — with Settings → Developer Settings → Testnet Mode. No browser extensions are recommended here; the self-contained route is tools/testnet_e2e.py, which signs with a throwaway local key and needs no wallet at all. Creates the USDC-devnet token account if missing
   and approves <b>1 unit</b> to a test delegate (the System Program address).</div>
   <div id="solacct" class="mono" style="margin-top:8px">not connected</div>
   <button id="solconnect">Connect Phantom</button>
@@ -29,7 +29,7 @@ approves — this page lives outside the product and is served only with <span c
 </div>
 
 <div class="box"><h2>TRON Nile</h2>
-  <div class="hint">Needs TronLink (extension) switched to the <b>Nile</b> network, with test TRX from <a href="https://nileex.io/join/getJoinPage" target="_blank" rel="noopener">nileex.io</a>.
+  <div class="hint">Manual route (optional): the TronLink app switched to the <b>Nile</b> network, with test TRX from <a href="https://nileex.io/join/getJoinPage" target="_blank" rel="noopener">nileex.io</a>.
   Approves <b>1 unit</b> of Nile-USDT to a test spender (the TRON black-hole address).</div>
   <div id="tronacct" class="mono" style="margin-top:8px">not connected</div>
   <button id="tronconnect">Connect TronLink</button>

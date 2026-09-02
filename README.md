@@ -193,11 +193,15 @@ open the test-grants page with throwaway wallets (Phantom in *Testnet mode*, Tro
 GUARDBOT_SOLANA_RPC=https://api.devnet.solana.com GUARDBOT_TRON_NETWORK=nile GUARDBOT_DEV_SEED=1 python3 guardd.py
 ```
 
-`/dev/seed` airdrops devnet SOL and creates a 1-unit SPL delegate; on Nile it approves 1 unit of
-test USDT (faucet: nileex.io). Then `/view` on the same wallet shows the row → **Revoke** → sign →
-the receipt is watched and the row disappears when the live allowance reads zero. The viewer
-shows a TESTNET chip in this mode; EVM chains stay mainnet. Nothing on this page runs unless
-`GUARDBOT_DEV_SEED=1` is set — GuardBot itself never builds an approval.
+The self-contained proof is `python3 tools/testnet_e2e.py solana`: it generates a THROWAWAY
+keypair locally, funds it from the devnet airdrop, creates a 1-unit SPL delegate, then signs and
+sends the very revoke this tool builds — pure stdlib Python, no wallet software, no third party,
+zero value at risk — and verifies the delegate is gone by re-reading the account. The TRON leg
+(`tools/testnet_e2e.py tron`) does the same on Nile once the printed throwaway address is topped
+up at the nileex.io faucet. `/dev/seed` remains as an optional manual route for wallet APPS on
+their officially supported platforms only (Phantom iOS/Android in Testnet Mode, TronLink app on
+Nile) — never for unmaintained browser extensions. The viewer shows a TESTNET chip in this mode;
+EVM chains stay mainnet. GuardBot itself never builds an approval.
 
 ```bash
 python3 -m unittest discover -s tests          # 27 unit tests, no network, ~5ms
