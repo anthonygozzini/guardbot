@@ -3,418 +3,150 @@
 <p align="center"><a href="https://anthonygozzini.github.io/guardbot/demo.html"><img src="assets/demo.gif" alt="35-second demo: a block verdict with evidence on a homoglyph impostor token, an honest safe on real USDT with measured numbers, a one-QR three-chain wallet connection, and an on-chain-simulated revoke" width="820"></a></p>
 <p align="center"><b><a href="https://anthonygozzini.github.io/guardbot/demo.html">▶ Interactive 35-second demo</a></b> — real recorded runs, reproducible from this repo.</p>
 
-Before you buy a token: **is it a rug / honeypot / trap?** GuardBot answers first-hand — it
-simulates buying the token and selling it back against live liquidity — and returns **one
-verdict**, `safe | warn | block`, **with the evidence**. It never routes trades or touches
-funds: it only reads public data and simulates. **No third-party safety API is consulted on any
-chain** — Solana is read first-hand too (`solcheck.py`).
+One paste field, two questions, three ecosystems (**EVM · Solana · TRON**):
 
-Designed as a typed **MCP tool** an agent calls *before* it buys, plus a plain HTTP API,
-with optional per-call **x402** payments.
+- **"Is this token a trap?"** — GuardBot *actually buys and sells it* in a simulation against
+  live liquidity. No vendor API. Verdict: `safe / warn / block`, each check with its evidence.
+- **"What did this wallet already approve?"** — every standing approval in one table, across
+  chains no single revoke tool unifies. Then revoke it: your wallet signs, and the effect is
+  proven on-chain *before* you sign.
 
-Every check carries its proof: whether the sell actually reverted, what the round trip really
-returned, how deep the pool is, which privileged functions are in the deployed bytecode.
+## Try it — 2 minutes, zero dependencies
 
-## Quickstart
-
-**No dependencies** (Python 3.8+ standard library only — nothing to `pip install`), **no keys**,
-**no account**. It runs on your machine and reads public RPCs; queries are live and ephemeral.
+Python stdlib only. No pip install, no keys, no account. Everything runs on your machine.
 
 ```bash
 git clone https://github.com/anthonygozzini/guardbot && cd guardbot
-python3 guardd.py          # then open http://127.0.0.1:8403/view
+python3 guardd.py            # open http://127.0.0.1:8403/view
 ```
 
-That's it. From the CLI instead:
-```bash
-python3 approvals.py  0x4E2A45E432E3EAC7F273f0eBEb8D1DaF8C59098A   # what has a wallet handed out?
-python3 tokencheck.py bsc 0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82  # is this token a trap?
-python3 solcheck.py   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v   # Solana token safety
-python3 -m unittest discover -s tests                              # 51 offline tests, ~0.3s, prove it
-```
+- Paste a **token contract** → safety verdict.
+- Paste a **wallet** → its approvals, with Revoke buttons.
+- **Connect a wallet** → one QR opens one WalletConnect session for EVM + Solana + TRON together
+  (needs a free projectId: `GUARDBOT_WC_PROJECT_ID=<id> python3 guardd.py`).
 
-Point an agent at it as an **MCP tool** (Claude Desktop / Claude Code / VibeKit):
-```json
-{ "mcpServers": { "guardbot": { "command": "python3",
-  "args": ["/absolute/path/to/guardbot/mcp_server.py"] } } }
-```
-It exposes `check_token(chain, address)` and `check_approvals(address)`.
-
-**Connect a wallet** (to skip pasting an address, and to sign revokes): with a free WalletConnect
-projectId, one QR — or one tap inside the wallet's in-app browser — opens a single session for
-**every chain the wallet supports at once** (EVM + Solana + TRON namespaces), the same entry you
-see and can end in the wallet's own WalletConnect list; the banner states the connection type and
-the chains the wallet actually approved, read from the session. Without a projectId the viewer
-falls back to the injected providers. The SDK loads lazily, only when used, so the default page
-stays dependency-free:
-```bash
-GUARDBOT_WC_PROJECT_ID=<your id from cloud.reown.com> python3 guardd.py
-```
-
-Data ages, so once in a while: `python3 tools/refresh.py` re-mines everything from the chain.
-
-GuardBot does both sides of safety:
-- **Prevent** — is a token a trap *before* you buy? Answered **first-hand**: we simulate
-  buying and selling it ourselves (see below), rather than asking a vendor's API.
-- **Fix** — `approvals` + `revoke`: paste any address, see standing approvals across
-  **EVM + TRON + Solana** in one place (what single-chain revoke tools don't unify), then take
-  a permission back with a transaction your own wallet signs.
-
-## Revoking (`revoke.py`)
-
-Seeing the danger without being able to remove it is half a tool, but writing is also where a
-safety tool can do harm, so the path is deliberately narrow. Exactly three calls can ever be
-built, each with the revoking argument hard-coded — `approve(spender, 0)`,
-`setApprovalForAll(operator, false)`, `Permit2.approve(token, spender, 0, 0)`. There is no code
-path that emits a transfer, an increase, or an arbitrary call, and the amount is a literal in the
-encoder rather than something a caller can set.
-
-Nothing is signed or broadcast server-side: `/v1/revoke` returns calldata, the page shows **the
-exact call, contract, chain and data before anything is signed**, and your own browser wallet
-signs it one at a time — or you copy the calldata to a hardware or offline signer. This page never
-sees a key and never batches signatures.
-
-Revoke also covers the non-EVM chains, each with its own signing path in the viewer: **TRON** via
-the injected `window.tronWeb` (TronLink / Trust) building `approve(spender, 0)`, and **Solana** via
-`window.solana` (Phantom / Trust) signing the SPL Token `revoke` instruction on the token account
-(built with `@solana/web3.js`, loaded lazily). Open the page in the wallet's in-app browser and the
-right provider is there.
-
-All three are proven the same way before you sign, at zero cost: the EVM calldata runs under
-`eth_simulateV1`, the Solana `Revoke` instruction under `simulateTransaction`, the TRC-20
-`approve(spender, 0)` under TronGrid's `triggerconstantcontract` — each against the live grant,
-and the page shows "✓ simulated" only when the node actually executed it. Beyond simulation,
-every chain's revoke has been signed and landed for real: EVM on mainnet (allowance read back
-zero), Solana and TRON on their testnets via `tools/testnet_e2e.py` — our own stdlib ed25519 /
-secp256k1 signer (self-tested against the RFC 8032 and secp256k1 reference vectors), a throwaway
-key, and a first-hand re-read proving the delegate/allowance gone. The viewer submits the same
-calls through the wallet SDKs.
-
-One non-obvious thing it gets right: **zeroing the ERC-20 approval to Permit2 does not clear the
-grants already inside Permit2**. Those live in Permit2's own books until they expire, and must be
-zeroed there — the blind spot this tool found in reading, closed in writing.
-
-**Proven, not asserted.** Before you sign, `/v1/revoke?owner=…` runs the revoke through
-`eth_simulateV1` — it executes the transaction and re-reads the grant in the same simulated block,
-with no gas — and the page shows **✓ simulated: this sets the permission to 0** only when the read
-actually comes back zero. Where an RPC doesn't support the method it says so rather than bluffing.
-The test suite proves the same for all three kinds against live grants: ERC-20 allowance → 0, NFT
-`isApprovedForAll` → false, Permit2 amount → 0. The one thing no read-only check can prove is the
-wallet broadcasting the signed transaction — that is the wallet's job, not the calldata's.
-
-## Solana token safety (`solcheck.py`)
-
-Solana has no DEX honeypot to simulate the way EVM does; the trap is a different shape and it is
-written plainly in the mint: a **freeze authority** (someone can freeze your account — you keep the
-balance and can never sell), a **mint authority** (unlimited new supply), and the Token-2022
-extensions that can seize or tax you — **permanent delegate** (moves your tokens out of your
-wallet, unrevocably), **transfer hook** (arbitrary code on every transfer, can make selling fail),
-**transfer fee**. Plus holder concentration from `getTokenLargestAccounts`.
-
-Freeze authority is judged *together with* concentration, because on its own it does not tell a
-regulated stablecoin from a honeypot: Circle can freeze USDC and says so. Scoring it as a hard
-failure branded USDC and USDT `block` — the same false positive the EVM side had. Public Solana
-RPCs also throttle hard, and a throttled call is reported as **unknown**, never as "fine".
-
-## Honeypot detection, done first-hand (`tokencheck.py`)
-
-Nobody's API is asked whether a token is a scam. `eth_call` accepts a **state override**, so a
-throwaway address can be handed some native coin and then **actually buy the token and sell it
-back** — atomically, in one call, against live liquidity, using Multicall3 as the temporary
-holder. Nothing is signed, nothing is spent. If the sell reverts, it's a honeypot; if less money
-comes back than the quote promised, that difference *is* the tax.
-
-Also read straight from the chain: liquidity depth, share of LP burned, whether ownership is
-renounced, whether it's an upgradeable proxy, and which privileged functions (mint, blacklist,
-pause, fee setters) genuinely exist in the deployed bytecode — matched by selectors computed
-with our own `keccak.py`, since Python ships SHA3-256, which is not keccak256.
-
-### The name on the tin proves nothing
-
-The disguise can even be typographic: a live BSC scam's ticker renders as USDT but is written
-in Armenian, Lisu and Roman-numeral lookalikes — string comparison sees a brand-new symbol, and
-honeypot.is shows it PASSED (the mechanics are clean; the name is the scam). GuardBot folds
-Latin-lookalike characters first (`homoglyphs.py`, NFKC + a curated confusables map), judges
-identity on what the ticker READS as, and fails the disguise itself: no honest token needs one.
-An honest non-Latin name (katakana, CJK) folds to itself and is never flagged.
-
-
-`symbol()` is whatever the contract says about itself, and it is free to lie. Among 1209 real,
-actually-approved BSC tokens, **four different contracts call themselves "USDT"** — one real,
-three impersonating it, and people had approved the fakes. Any tool that prints the self-declared
-symbol is laundering the disguise, which is exactly what the approvals viewer used to do.
-
-Identity is therefore never taken from the name, only from the **contract address**, and the tool
-answers a sharper question: *is this the contract the market means by that ticker?* What a fake
-cannot cheaply buy is depth — the real USDT trades against ~74,500 BNB, its impostors against
-zero. So `tools/mine_token_registry.py` mines, per chain, which contracts claim each symbol and
-how deep each one's pools run (summed across V2 **and** every Uniswap-V3 fee tier). The test is a
-**ratio against that symbol's own leader**, not any fixed size, so it works for obscure tickers too.
-
-The check is generic — it covers every contested symbol found (**406 across 5 chains**), not a
-curated shortlist. And because it only ever compares contracts claiming the *same* symbol string,
-distinct real stablecoins (USDe, FDUSD, TUSD, PYUSD, GHO, crvUSD, USD1, USDD…) never collide with
-each other by construction; no allow-list of "approved" tokens exists or is needed.
-
-A big ratio alone is not guilt: **29 contested symbols have more than one genuine market behind
-them** — a chain's native stablecoin and its bridged twin both answer to `USDC`. So the accusation
-also requires that the contract have *no market of its own*; an impostor lives off the borrowed
-name because it has nothing else. One with real liquidity gets the honest answer instead: the
-ticker is shared, look at the address.
-
-Results: real USDT → `safe`, all three fakes → `block`, bridged USDC → `warn` (shared ticker, real
-market). In the approvals viewer a contested token reads **⚠ claims "USDT"** with the real address
-in the tooltip, never a bare `USDT`, and the approval is scored critical.
-
-`block` is also reserved for demonstrated hard failures — honeypot, unbuyable, impostor, punitive
-fees, empty pool. Soft warnings no longer add up into one: a legitimate bridged USDC that buys and
-sells perfectly was being blocked purely for having a proxy, an owner and unburned LP.
-
-Measuring V2 pools alone had flagged the genuine native USDC on Arbitrum as an impostor — most of
-its liquidity lives in V3. The fix was to measure the market properly, not to soften the check.
-
-**A failure has to prove itself.** A reverted sell can mean "honeypot" or "the node hiccuped",
-and the two are indistinguishable in the response. So every failure is paired with a *control*
-token that is certainly sellable, run through the same node at the same moment: if the control
-fails too, the observation is thrown away. The whole analysis is also pinned to **one block** —
-without that, reserves shift between calls on a busy pool, the second buy returns slightly less
-than the first, the sell overdraws, and the tool brands **USDT** a honeypot. It did, twice,
-until this was fixed.
-
-Tokens that live only on Uniswap V3 are simulated there instead (native coin is wrapped inside
-the same call), which is also how **Optimism** is covered — it has no Uniswap-V2 venue, its
-liquidity is on Velodrome, whose router takes a different route struct. Depth is likewise summed
-over V2 and every V3 fee tier: measuring V2 alone called Arbitrum's native USDC illiquid and
-blocked it.
-
-Measured on BSC (real tokens people had approved): **5/5 honeypots blocked** across repeat runs,
-**0 false positives in 20 consecutive runs** on CAKE / USDT / BUSD / WBNB. Round trips come back
-at exactly the pool fee taken twice (99.5% on PancakeSwap's 0.25%, 99.4% on a 0.3% tier), which
-is the check that the measurement itself is sound. Chains: BSC, Ethereum, Base, Arbitrum,
-Polygon, Optimism.
+From the CLI or as an agent tool:
 
 ```bash
-python3 tokencheck.py bsc 0x<token>
-curl "http://127.0.0.1:8403/v1/tokencheck?chain=bsc&address=0x<token>"
+python3 tokencheck.py bsc 0x<token>       # is it a trap?
+python3 approvals.py  0x<wallet>          # what has it approved? (also T… / Solana base58)
+python3 mcp_server.py                     # MCP: check_token + check_approvals for agents
 ```
+
+## Why trust the verdicts
+
+- **The buy and sell are real.** A state-override `eth_call` gives a throwaway address native
+  coin and trades the token atomically against the live pool. Sell reverts → honeypot. Money
+  missing from the round trip → that *is* the tax.
+- **A failure must prove itself.** Every failed sell is re-run against a control token on the
+  same node in the same moment; if the control fails too, the observation is discarded. The whole
+  analysis is pinned to one block. (Without this, USDT got branded a honeypot. Twice.)
+- **Names are never trusted.** Among 1,209 real approved BSC tokens, four call themselves "USDT".
+  Identity comes from a mined per-chain registry of who *actually* trades under a ticker, judged
+  by liquidity ratio — and lookalike characters are folded first (`homoglyphs.py`), so a ticker
+  that only *renders* as USDT fails for the disguise itself.
+- **Measured:** 5/5 known honeypots blocked, 0 false positives in 20 consecutive runs on
+  CAKE/USDT/BUSD/WBNB, round trips land at exactly the pool fee ×2. A user-supplied test set of
+  4 live fakes → all `block`, each for its own reason; one of them is shown as **PASSED** by
+  honeypot.is.
+- **Solana and TRON are read first-hand too:** mint/freeze authorities and Token-2022 extensions
+  (permanent delegate, transfer hook, transfer fee); TRON bytecode scanned for
+  seize/blacklist/mint powers.
+
+## Revoking
+
+- Only **three calls** can ever be built, zeroes hard-coded: `approve(spender, 0)`,
+  `setApprovalForAll(op, false)`, `Permit2.approve(token, spender, 0, 0)`. No transfer, no
+  arbitrary call, no path around it.
+- The page shows the exact call, contract, chain and calldata **before** anything is signed.
+  Your wallet signs one transaction at a time; the server never sees a key.
+- **Proven before signing:** the revoke is executed in simulation and the permission re-read at
+  zero. "✓ simulated" appears only when the node actually did it.
+- **Proven for real:** EVM revokes signed and confirmed on mainnet; Solana and TRON revokes
+  landed on their testnets, signed by this repo's own stdlib ed25519/secp256k1 signer
+  (`tools/testnet_e2e.py`, self-tested against the RFC 8032 reference vectors).
+- Worth knowing: zeroing your ERC-20 approval *to* Permit2 does **not** clear grants already
+  inside Permit2. GuardBot reads and revokes those separately.
+
+## Coverage and speed
+
+| Chain | History | Verdict engine |
+|---|---|---|
+| Ethereum, Arbitrum, Polygon | full logs (free Etherscan tier) | buy/sell simulation |
+| Base | full logs (Blockscout, keyless) | buy/sell simulation |
+| Optimism | free-RPC log scan | buy/sell simulation (Velodrome) |
+| BSC | probe (96.6% coverage) **+ automatic deep scan** | buy/sell simulation |
+| Solana | SPL delegates via RPC | mint/extension reading |
+| TRON | TronScan + TronGrid | bytecode power scan |
+
+- Live multi-chain scan ≈ 2s on a normal wallet; cached re-open in microseconds (local
+  incremental index in `~/.guardbot` — private, never uploaded).
+- BSC publishes no free log history, so it is probed against a chain-mined candidate universe —
+  and the first scan of each wallet auto-starts a one-time **deep scan** that walks the wallet's
+  own transactions (an `approve` is always a transaction the owner signed). Verified: matches
+  revoke.cash to the decimal on a wallet the probe alone missed.
+- Anything unreadable is labelled `partial` or `probed` on screen. Never silently dropped.
+
+## Honest limits
+
+- "LP burned" is checked; third-party LP lockers are not — a locked-but-unburned LP reads as a
+  caution.
+- No holder-distribution check on EVM (Solana has concentration).
+- Relayer-executed EIP-2612 permits leave no owner transaction, so the BSC deep scan cannot see
+  them (the Permit2 kind is probed).
+- The first scan of a busy wallet is slow on free public RPCs (~30–90s). Re-scans are instant.
+- Mined data (registries, probe universes) ages; the UI shows its age and
+  `python3 tools/refresh.py` re-mines everything.
 
 ## Tests
 
-### Testing the Solana / TRON revoke signing without spending anything
-
-Nobody tests signing with real money: use the testnets. This has been RUN, and the revokes are
-proven landed — Solana testnet txs `36NkcShQ…`/`56ajb3Jh…` (delegate set, then gone) and Shasta
-txs `6735f9d9…`/`e4bfa007…` (allowance 1, then 0), each effect re-read first-hand. To reproduce,
-start the daemon in testnet mode (the viewer then wears a TESTNET chip):
-
-```
-GUARDBOT_SOLANA_RPC=https://api.devnet.solana.com GUARDBOT_TRON_NETWORK=nile GUARDBOT_DEV_SEED=1 python3 guardd.py
+```bash
+python3 -m unittest discover -s tests                    # 51 offline tests, ~0.3s
+GUARDBOT_LIVE=1 python3 -m unittest discover -s tests    # + 19 live tests on real chains
 ```
 
-The self-contained proof is `python3 tools/testnet_e2e.py solana`: it generates a THROWAWAY
-keypair locally, funds it from the devnet airdrop, creates a 1-unit SPL delegate, then signs and
-sends the very revoke this tool builds — pure stdlib Python, no wallet software, no third party,
-zero value at risk — and verifies the delegate is gone by re-reading the account. The TRON leg
-(`tools/testnet_e2e.py tron`) does the same on Nile once the printed throwaway address is topped
-up at the nileex.io faucet. `/dev/seed` remains as an optional manual route for wallet APPS on
-their officially supported platforms only (Phantom iOS/Android in Testnet Mode, TronLink app on
-Nile) — never for unmaintained browser extensions. The viewer shows a TESTNET chip in this mode;
-EVM chains stay mainnet. GuardBot itself never builds an approval.
+Many are regressions for bugs that actually shipped here. The testnet signing proof is
+`python3 tools/testnet_e2e.py solana|tron` — throwaway local key, zero value at risk.
+
+## Configuration (all optional)
+
+| Env var | Effect |
+|---|---|
+| `GUARDBOT_PORT` | port (default 8403) |
+| `GUARDBOT_HOST=0.0.0.0` | expose on your LAN (phone in the same Wi-Fi); default loopback |
+| `GUARDBOT_WC_PROJECT_ID` | enables WalletConnect (free id from cloud.reown.com) |
+| `GUARDBOT_ETHERSCAN_KEY` | free; speeds up log history on eth/arbitrum/polygon |
+| `GUARDBOT_SOLANA_RPC` / `GUARDBOT_TRON_NETWORK` | point at testnets (devnet / nile) |
+| `GUARDBOT_DEV_SEED=1` | serves `/dev/seed`, a testnet-only page to create test grants |
+| `GUARDBOT_NO_CACHE=1` | disable the local index |
+
+## Payments (x402) — off by default
+
+The repo is free forever; humans never pay for safety. For a *hosted* deployment there is a real
+x402 rail: unpaid calls get HTTP 402 with the price, an agent pays USDC through a facilitator
+(`/verify` + `/settle`, replay-guarded), and the paid endpoint serves the same first-hand
+engines. Missing facilitator → paid calls are rejected, never faked.
 
 ```bash
-python3 -m unittest discover -s tests          # 51 offline tests, no network, ~0.3s
-GUARDBOT_LIVE=1 python3 -m unittest discover -s tests   # + 19 live tests against real chains
-```
-The unit tests pin the places where a silent mistake becomes a false verdict — hashing, ABI
-codec, scoring, the impersonation rule, the Permit2 decoder, the canary — and several are
-regressions for bugs that actually shipped here: a transient node error branding USDT a
-honeypot, soft warnings accumulating into a hard block, a V2-only depth measurement calling
-native USDC illiquid, and our own 1% sell margin being reported as the token's tax. The live
-tests assert that real tokens are never blocked, known honeypots and fake USDT always are,
-and that every revoke kind provably removes its grant — EVM by eth_simulateV1 against live
-mainnet grants, Solana and TRON by node-side simulation of the fixture wallets' real grants.
-
-## Components
-- `guard.py` — legacy third-party wrapper (GoPlus/RugCheck). Superseded by `tokencheck.py`
-  (EVM) and `solcheck.py` (Solana); kept only as a fallback for chains neither covers.
-- `approvals.py` — approval viewer: `approvals(address)` across EVM (Approval events + live
-  allowance, the revoke.cash method), TRON (TronScan), Solana (SPL delegates via RPC).
-- `guardd.py` — HTTP daemon: `/v1/check`, `/v1/approvals`, `/view` (browser UI), x402 payments.
-- `tokencheck.py` / `solcheck.py` / `troncheck.py` — first-hand token-safety engines for EVM
-  (buy-and-sell simulation), Solana (mint authorities + Token-2022 extensions) and TRON
-  (bytecode seize/blacklist/mint scan). No third-party verdict.
-- `revoke.py` — builds the exact revoking calldata (three calls only) and simulates its effect.
-- `mcp_server.py` — MCP server (stdio): exposes `check_token(chain, address)` (our engines)
-  and `check_approvals(address)` as typed tools for an agent.
-- `tools/refresh.py` — re-mines every chain-derived snapshot in one command.
-- `keccak.py` — keccak256 in pure Python, so selectors, event topics and storage slots are
-  computed here rather than copied (hashlib ships SHA3-256, which is not keccak256).
-- `tools/mine_*.py` — one-off miners that build the probe universes and the symbol registry
-  from chain data.
-
-### Approvals viewer — local-first, private, and fast
-```bash
-python3 guardd.py            # then open http://127.0.0.1:8403/view
-python3 approvals.py 0x…     # or TRON T… / Solana base58
-```
-**Runs entirely on your machine.** The browser paints the last result from your local index
-**instantly** (microseconds), then refreshes it with a live scan. No hosted server ever sees
-which address you look up.
-
-**Speed — minutes → seconds → microseconds.** Listing every approval means reading historical
-`Approval` events, which base-layer RPCs don't index. A naïve full-history sweep is minutes/chain.
-GuardBot's own scanner instead:
-- **skips dead chains instantly** — `eth_getTransactionCount == 0` means the address never acted
-  there, so no approval is possible (a binary search on the nonce also bounds the active window);
-- **adaptive parallel scan** — seeds wide block ranges across a pool of free public RPCs and only
-  splits a range when a provider rejects it as too large, trying *every* pool RPC before giving up.
-  A range no free RPC will serve is reported as a **partial** scan, never silently dropped;
-- **local incremental index** (`~/.guardbot`, private, outside the repo, never uploaded) — the
-  first scan is seconds; every re-scan reads cached `(token,spender)` pairs and only the blocks
-  added since, and an instant cached paint is ~microseconds. Disable with `GUARDBOT_NO_CACHE=1`.
-
-Result on a normal wallet: full multi-chain live scan in ~2s, cached re-open in <1ms.
-
-**Probing the present when the past is unreadable.** BSC refuses `eth_getLogs` on every free RPC
-(`limit exceeded`, or a 50-block ceiling — useless across 118M blocks), so approval *history* there
-cannot be read for free. GuardBot doesn't buy an indexer for it: it changes mechanism.
-`eth_call` is never range-limited, and **Multicall3** — same address on every EVM chain — batches
-thousands of `allowance()` calls into **one** request (measured: 4000 calls / 2.6s on BSC). So the
-present is probed instead of the past being read:
-
-1. `tools/mine_probe_universe.py` samples real `Approval` events from the chain itself and keeps
-   the `(token, spender)` pairs that actually occur — the universe is mined from the chain, not
-   hardcoded and not bought. On BSC: 7.7k unique pairs exist, the top 4000 cover **96.6%** of all
-   observed approval activity (`probe_universe.json`).
-2. Every candidate pair is checked live via Multicall3 in ~8 batched requests.
-
-Verified against ground truth: **3/3 real BSC approvals recovered, ~0.8s each, zero `getLogs`,
-zero API keys, zero third-party services** — including two unlimited USDT approvals that the
-log-scanning path could never see. Results are labelled `probed` with their coverage %: high, but
-reported as a probe, never implied to be exhaustive.
-
-The probe runs on **every** chain, not just BSC, alongside the log scan — the two sources are
-unioned, so history is exhaustive where it's readable and the probe is the floor everywhere else.
-Universes are mined per chain **and per grant kind** (ERC-20, NFT operator, Permit2), so BSC —
-which has no readable history at all — is no longer blind to NFT and Permit2 grants.
-
-**Mined data is a snapshot, and says so.** A scam deployed after the last mining run simply isn't
-in the candidate set, and a scan over stale data narrows quietly. So every result carries
-`data_age_days` per chain (or `data_age_unknown`), and once it is old enough to matter the result
-says to re-run `python3 tools/refresh.py` — one command that re-mines every universe and registry.
-
-**Don't trust the token contracts.** The probe queries contracts nobody vetted, and scam tokens
-exist whose `allowance()` returns "unlimited" for the scammer's spender *no matter who the owner
-is* — 8 such contracts sit in Ethereum's top-12k pairs alone. Every hit is therefore re-asked for
-a **canary owner** that cannot have approved anything: a truthful ERC-20 answers 0, a fabricator
-doesn't, and its hits are dropped. Measured: 8 lies in → 0 out, genuine approvals untouched.
-
-**Who is the spender?** An approval's real risk is who you granted it to, and a 7-entry allowlist
-(Permit2, Uniswap, 1inch, 0x) left every other spender reading `unknown → high`, so legitimate
-protocols — deBridge, CoW/GPv2, Rango, Bridgers, LI.FI — all looked dangerous and nameless while a
-block explorer labels them. Two sources fix this without a paid label API. Human **names** can't be
-derived (they're off-chain), so the well-known cross-chain infrastructure is a small curated list
-(as revoke.cash does). **Establishment** *can* be derived: `tools/mine_spender_registry.py` counts,
-per chain, how many **distinct wallets** have approved each spender — thousands of independent
-approvers is a protocol the market trusts, and Sybiling that many costs real gas. A spender past
-that bar (≥1% of the sampled approvers, floor 300 — never a bare number) becomes `established` and
-stops reading high; the bar is high on purpose so a drainer with a few hundred victims is never
-de-alarmed, and a GoPlus-malicious flag overrides establishment every time. Result on the test
-wallet: the five BSC approvals now show `deBridge`, `Rango`, `Bridgers`, `CoW Protocol` at `low`,
-matching the explorer, instead of five nameless `high` rows.
-
-**No keyed RPC provider.** Every `eth_call` — allowance, symbol, name, nonce, the Multicall3 probe
-— runs on **free public RPCs**, with several per chain and a liveness pick so a dead endpoint can't
-be mistaken for a clean wallet. Proven: same address, same result with and without keys, so there
-is nothing to rate-limit, pay for, or leak. Nothing is skipped either — each chain is reported as
-`scanned`, `probed`, `partial`, or `degraded`.
-
-The one optional key is a free **Etherscan V2** key, which only speeds up *log history* on the three
-chains its free tier covers (Ethereum / Arbitrum / Polygon); everything else, including all
-`eth_call`, is public. It lives only in your local `.env` (gitignored, never shipped):
-```bash
-echo 'GUARDBOT_ETHERSCAN_KEY=<your key>' >> .env   # optional, free; covers eth/arbitrum/polygon history
+GUARDBOT_PRICE_USDC=0.01 GUARDBOT_NETWORK=base-sepolia \
+GUARDBOT_FACILITATOR=<url> GUARDBOT_PAY_TO=0x<you> python3 guardd.py
 ```
 
-## Run
-```bash
-# engine from the CLI
-python3 guard.py solana EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+## Files
 
-# HTTP daemon (free, for demo/testing)
-python3 guardd.py                       # :8403
-curl "http://127.0.0.1:8403/v1/check?chain=solana&address=<mint>"
-curl -X POST http://127.0.0.1:8403/v1/check -d '{"chain":"base","address":"0x…"}'
-
-# paid mode (real x402): returns 402 with `accepts`, verifies + settles via a facilitator
-GUARDBOT_PRICE_USDC=0.01 \
-GUARDBOT_NETWORK=base-sepolia \
-GUARDBOT_FACILITATOR=<x402 facilitator url> \
-GUARDBOT_PAY_TO=0x<your address> \
-python3 guardd.py
-
-# MCP tool for an agent (Claude / VibeKit)
-python3 mcp_server.py                    # speaks JSON-RPC over stdio
-```
-Free endpoints: `GET /llms.txt` (agent onboarding), `GET /v1/status`.
-Chains: `solana | ethereum | bsc | base | arbitrum | polygon | optimism | avalanche`.
-
-## Payment model
-The code is free for everyone, forever: clone it, run it, pay nothing — that is the point of a
-local-first tool. Payment only exists for a **hosted** deployment (someone running GuardBot on a
-public URL for software that can't self-host):
-- **Free** (default): every endpoint open — the mode this repo ships in.
-- **Per-call x402-USDC** (built, tested, off by default): a bot or AI agent calling a hosted
-  endpoint gets HTTP 402 with the price, pays from its own wallet through an x402 facilitator
-  (`/verify` + `/settle`, replay-guarded), and receives the verdict — the same pay-as-you-go
-  model wallets and Telegram trading bots already buy from token-safety APIs. If the
-  facilitator isn't configured, paid requests are rejected — never a false "paid". The paid
-  endpoint serves the same first-hand engines as the free one.
-- Humans never pay for safety here: no fee on viewing, none on revoking (an `approve(spender,0)`
-  moves no value — there is nowhere for a fee to live, and charging for the fire exit is wrong).
-  If a swap step ever ships, it would carry a standard partner fee inside the swap transaction,
-  the way wallets monetize — never the safety actions.
-
-## Status
-- [x] First-hand safety engines: EVM buy-and-sell simulation (`tokencheck.py`) and Solana
-      mint/extension/concentration reading (`solcheck.py`). No third-party safety API.
-- [x] HTTP daemon (`/v1/check`, `/llms.txt`, `/v1/status`) + cache.
-- [x] MCP stdio server: `check_token` (our engines) + `check_approvals`.
-- [x] Real x402 payments (402 `accepts` → verify + settle → verdict + `X-PAYMENT-RESPONSE`),
-      tested end-to-end.
-- [x] Local-first approvals viewer (`/v1/approvals`, `/view`) across EVM + TRON + Solana —
-      live, private, keyless; ERC-20 allowances, NFT operators and grants inside Permit2.
-- [x] Own multi-chain scanner: nonce-skip + adaptive parallel `getLogs` + local incremental
-      index (µs cached paint → ~2s live), partial ranges surfaced, never silently dropped.
-- [x] BSC covered with **no** log history and **no** paid provider: Multicall3 present-probing over
-      a chain-mined candidate universe — plus `tools/deepscan_bsc.py` for certainty: an approve is
-      always a transaction the owner signed, so binary-searching the wallet's nonce history over an
-      archive RPC recovers every classic approval by construction (verified: a wallet whose 5
-      approvals to an unmined spender probing missed now matches revoke.cash to the decimal).
-- [x] Revoke on all three chains, **proven landed**: EVM calldata signed on mainnet (allowance
-      re-read zero), Solana `Revoke` and TRC-20 `approve(spender,0)` signed on the testnets by
-      our own stdlib ed25519/secp256k1 signer (`tools/testnet_e2e.py`) — plus node-side
-      simulation shown in the viewer before every signature (`revoke.py`, `/v1/revoke`).
-- [x] Wallet connect: one WalletConnect session for EVM + Solana + TRON together (QR or in-app
-      deep link), connection type and approved chains shown from the session itself; injected
-      fallback; Disconnect ends the session on the wallet side too.
-- [x] Revoke lifecycle in the viewer: Pending → on-chain receipt watch → "Revoked ✓" →
-      auto re-scan; the table only ever changes on first-hand reads.
-- [x] Base log history via Blockscout (free, keyless) with honest fast fallback; Etherscan
-      calls throttled under its rate limit; token symbols fall back to the local mined registry.
-- [x] Freshness: mined data is timestamped, its age is reported, `tools/refresh.py` re-mines all.
-- [x] TRON token safety (`troncheck.py`): bytecode scan for seize/blacklist/mint powers, read
-      first-hand from the TRON node — no vendor verdict.
-- [x] The demo greets you at the door: an animated GIF atop this README and the interactive
-      35-second demo hosted on GitHub Pages — real recorded runs, reproducible from this repo.
-- [ ] Optional, by choice rather than omission: a hosted public endpoint (the x402 rail is built
-      and tested for exactly that) — the tool itself stays local-first and free.
+- `tokencheck.py` / `solcheck.py` / `troncheck.py` — the first-hand safety engines
+- `approvals.py` — multi-chain approvals scanner (+ local index)
+- `revoke.py` — the three revoking calls + on-chain simulation
+- `guardd.py` — HTTP daemon and `/view` UI · `mcp_server.py` — agent tools
+- `homoglyphs.py` — lookalike-character folding · `keccak.py` — pure-Python keccak256
+- `tools/` — miners (`mine_*.py`), `refresh.py`, `deepscan_bsc.py`, `testnet_e2e.py`
 
 ## References
-- x402 payment protocol (the spec this repo's payment rail implements) —
+
+- x402 payment protocol (the spec the payment rail implements) —
   https://github.com/x402-foundation/x402
-- GoPlus address_security — https://docs.gopluslabs.io/reference/api-overview — used ONLY as an
-  extra reputation hint on spender addresses and as the legacy fallback for chains our own
-  engines don't cover; a token verdict is always produced first-hand, never from a vendor.
+- GoPlus address_security — https://docs.gopluslabs.io/reference/api-overview — used only as a
+  reputation hint on spender addresses and as legacy fallback for uncovered chains; token
+  verdicts are always produced first-hand.
 
 This is a safety signal on public data, not financial advice.
