@@ -560,6 +560,8 @@ class TestLiveTokenSafety(unittest.TestCase):
                  "0x67c91d04728ffcda058d86c33f7ba6f899aae3a9",
                  "0x760884305acadc6ac243572f49e763a63f9a7afa"]
     FAKE_USDT = ["0xbEC0209f3fe563f6726F7BEE38d72d57fd758888",   # homoglyph "USDT" — honeypot.is says PASSED
+                 "0x655B8A8419D6b0275F5aacB4Be88AEa3E469A2B8",   # plain impostor, symbol() lies "USDT"
+                 "0x53062ced2398fbe80d51c222ce43ee04b73adfcc",   # BscScan names it FakeUSDT; symbol() still lies
                  "0xa31f198088fbd75ecd8700f989587d413a1b8888",
                  "0x31c2a17ea816833ebb3df383f6b6d7895ba04e7b"]
 
