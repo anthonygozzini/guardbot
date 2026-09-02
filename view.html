@@ -360,7 +360,8 @@ function scanMulti(){
 // every injected provider in sequence (one wallet prompt at a time) and scan them together,
 // exactly like the multi-namespace WalletConnect session.
 function solProvider(){
-  return window.solana||(window.phantom&&window.phantom.solana)||(window.trustwallet&&window.trustwallet.solana)||null;
+  // solflare is the one still maintained on Firefox (Phantom's Firefox build stopped in 2025)
+  return window.solana||(window.phantom&&window.phantom.solana)||(window.trustwallet&&window.trustwallet.solana)||window.solflare||null;
 }
 function anyInjected(){
   return !!(window.ethereum||solProvider()||window.tronWeb||window.tronLink);

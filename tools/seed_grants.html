@@ -19,7 +19,7 @@ approves — this page lives outside the product and is served only with <span c
 <div id="cfg" class="hint">reading daemon config…</div>
 
 <div class="box"><h2>Solana devnet</h2>
-  <div class="hint">Needs Phantom (extension) in Settings → Developer settings → <b>Testnet mode</b>. Creates the USDC-devnet token account if missing
+  <div class="hint">Needs a Solana wallet on devnet: Solflare (Firefox/Chrome extension, switch network to Devnet) or the Phantom app (Testnet mode). Creates the USDC-devnet token account if missing
   and approves <b>1 unit</b> to a test delegate (the System Program address).</div>
   <div id="solacct" class="mono" style="margin-top:8px">not connected</div>
   <button id="solconnect">Connect Phantom</button>
@@ -52,7 +52,7 @@ fetch('/v1/config').then(function(r){return r.json();}).then(function(c){ CFG=c;
 var sol=null, solPk='';
 var solmsg=document.getElementById('solmsg');
 document.getElementById('solconnect').onclick=function(){
-  sol=window.solana||(window.phantom&&window.phantom.solana);
+  sol=window.solana||(window.phantom&&window.phantom.solana)||window.solflare;
   if(!sol){ solmsg.innerHTML='<span class="err">No Solana wallet injected — install Phantom and enable Testnet mode.</span>'; return; }
   Promise.resolve(sol.connect()).then(function(res){
     solPk=(res&&res.publicKey&&res.publicKey.toString())||(sol.publicKey&&sol.publicKey.toString());
