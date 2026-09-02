@@ -70,6 +70,17 @@ button.danger{background:var(--risk);color:#2c0f0c}
 .v-safe{border-left:4px solid var(--accent)} .v-safe .vword{color:var(--accent)}
 .v-warn{border-left:4px solid var(--warn)} .v-warn .vword{color:var(--warn)}
 .v-block{border-left:4px solid var(--risk)} .v-block .vword{color:var(--risk)}
+.vsym{font-family:var(--mono);font-size:.95rem;font-weight:600;color:var(--soft);margin-left:10px;vertical-align:2px}
+.vlead{margin-top:4px;font-size:.95rem}
+.vstats{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px}
+.vstat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 14px;min-width:110px}
+.vstat .k{font-size:.68rem;text-transform:uppercase;letter-spacing:.07em;color:var(--faint)}
+.vstat .n{font-family:var(--mono);font-weight:700;font-size:1.02rem;margin-top:2px}
+.crows{display:flex;flex-direction:column;gap:8px}
+.crow{display:flex;gap:12px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 14px}
+.crow .badge{margin-top:2px;flex:none}
+.crow .ct{font-weight:600;font-size:.93rem}
+.crow .cd{color:var(--soft);font-size:.88rem;margin-top:2px;line-height:1.5}
 .err{color:var(--risk);padding:14px;border:1px dashed var(--risk);border-radius:10px;background:#2c1613}
 a{color:var(--accent)}
 </style></head>
@@ -757,28 +768,50 @@ function renderVerdict(chain, a, d){
   var v=String(d.verdict||'unknown');
   var cls={safe:'v-safe',warn:'v-warn',block:'v-block'}[v]||'v-warn';
   var icon={safe:'✓',warn:'⚠',block:'⛔'}[v]||'?';
-  var rows=(d.checks||[]).map(function(c){
-    var st=String(c.status||'unknown');
-    var chip={pass:'b-ok',ok:'b-ok',warn:'b-risk',fail:'b-unl'}[st]||'';
-    var ev=c.evidence&&Object.keys(c.evidence).length
-      ? '<div class="mono" style="font-size:.72rem;color:var(--faint,#6f767e);margin-top:3px">'
-        +Object.keys(c.evidence).slice(0,6).map(function(k){var x=String(c.evidence[k]);
-          return esc(k)+'='+esc(x.length>44?x.slice(0,44)+'…':x);}).join('  ·  ')+'</div>'
-      : '';
-    return '<tr><td><span class="badge '+chip+'">'+esc(st)+'</span></td>'
-      +'<td><b>'+esc(c.name||'')+'</b><div class="hint" style="margin:2px 0 0">'+esc(c.detail||'')+'</div>'+ev+'</td></tr>';
-  }).join('');
+  var lead={safe:'Bought and sold successfully in a real simulation — no trap found. Standard caution still applies.',
+            warn:'Nothing fatal was demonstrated, but read the cautions below before touching it.',
+            block:'Do not buy. At least one hard failure was demonstrated — the details name it.'}[v]||'';
+  // human names for the machine check ids
+  var TITLES={honeypot:'Can you sell it back?', buy:'Can you buy it?', tradeable:'Is there a market at all?',
+    tax:'What trading costs you', liquidity:'Money actually in the pool', lp_burned:'Can the liquidity run away?',
+    ownership:'Who controls the contract', privileged_functions:'Hidden powers in the code',
+    identity:'Is it what it claims to be?', proxy:'Can the code be swapped under you?', contract:'The contract itself',
+    mint:'Can new supply be printed?'};
+  function title(n){ return TITLES[n]||String(n||'').replace(/_/g,' ').replace(/^./,function(c){return c.toUpperCase();}); }
+  // the numbers people actually look for, pulled from the checks' own evidence
+  var NATIVE={bsc:'BNB',ethereum:'ETH',base:'ETH',arbitrum:'ETH',optimism:'ETH',polygon:'POL'};
+  var ev={}; (d.checks||[]).forEach(function(c){ Object.assign(ev, c.evidence||{}); });
+  var stats=[];
+  if(ev.buy_tax_pct!=null)  stats.push(['Buy tax', Number(ev.buy_tax_pct).toFixed(1)+'%']);
+  if(ev.sell_tax_pct!=null) stats.push(['Sell tax', Number(ev.sell_tax_pct).toFixed(1)+'%']);
+  if(ev.round_trip_pct!=null) stats.push(['Round trip', Number(ev.round_trip_pct).toFixed(1)+'% back']);
+  if(ev.native_reserve!=null) stats.push(['Pool depth', (Number(ev.native_reserve)/1e18).toLocaleString(undefined,{maximumFractionDigits:2})+' '+(NATIVE[chain]||'')]);
+  if(ev.lp_burned_pct!=null) stats.push(['LP burned', Number(ev.lp_burned_pct).toFixed(0)+'%']);
+  if(ev.claimants!=null) stats.push(['Contracts claiming this ticker', String(ev.claimants)]);
+  var statrow=stats.length?'<div class="vstats">'+stats.map(function(x){
+      return '<div class="vstat"><div class="k">'+esc(x[0])+'</div><div class="n">'+esc(x[1])+'</div></div>';
+    }).join('')+'</div>':'';
   var EXPL={bsc:'https://bscscan.com/token/',ethereum:'https://etherscan.io/token/',base:'https://basescan.org/token/',
     arbitrum:'https://arbiscan.io/token/',polygon:'https://polygonscan.com/token/',optimism:'https://optimistic.etherscan.io/token/',
     tron:'https://tronscan.org/#/token20/',solana:'https://solscan.io/token/'};
-  out.innerHTML='<div class="verdict '+cls+'"><span class="vic">'+icon+'</span><div>'
-    +'<div class="vword">'+esc(v.toUpperCase())+(d.symbol?' <span class="hint" style="display:inline;font-size:.95rem">· '+esc(d.symbol)+'</span>':'')+'</div>'
-    +'<div class="hint" style="margin:3px 0 0">'+esc(chain)+' · <span class="mono">'+esc(short(a))+'</span>'
-    +(d.score!=null?' · score '+esc(d.score):'')
-    +(EXPL[chain]?' · <a href="'+esc(EXPL[chain]+a)+'" target="_blank" rel="noopener">explorer ↗</a>':'')
-    +' · verdict from a REAL simulated buy and sell, not a vendor API</div></div></div>'
-    +'<table><thead><tr><th style="width:92px">Check</th><th>Evidence</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  var rows=(d.checks||[]).map(function(c){
+    var st=String(c.status||'unknown');
+    var chip={pass:'b-ok',ok:'b-ok',warn:'b-risk',fail:'b-unl'}[st]||'';
+    return '<div class="crow"><span class="badge '+chip+'">'+esc(st)+'</span><div>'
+      +'<div class="ct">'+esc(title(c.name))+'</div>'
+      +'<div class="cd">'+esc(c.detail||'')+'</div></div></div>';
+  }).join('');
+  out.innerHTML='<div class="verdict '+cls+'"><span class="vic">'+icon+'</span><div style="flex:1">'
+    +'<div class="vword">'+esc(v.toUpperCase())+(d.symbol?'<span class="vsym">'+esc(d.symbol)+'</span>':'')+'</div>'
+    +'<div class="vlead">'+esc(lead)+'</div>'
+    +'<div class="hint" style="margin:6px 0 0">'+esc(chain)+' · <span class="mono">'+esc(short(a))+'</span>'
+    +(d.score!=null?' · score '+esc(d.score)+'/100':'')
+    +(EXPL[chain]?' · <a href="'+esc(EXPL[chain]+a)+'" target="_blank" rel="noopener">view on explorer ↗</a>':'')
+    +' · every verdict comes from a real simulated buy and sell — never a vendor API</div></div></div>'
+    +statrow
+    +'<div class="crows">'+rows+'</div>';
 }
+
 function runApprovals(a){
   go.disabled=true; out.innerHTML='<div class="status">Scanning… contacting server</div>';
   var ctl=('AbortController' in window)?new AbortController():null;
