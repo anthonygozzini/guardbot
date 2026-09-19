@@ -150,3 +150,7 @@ GUARDBOT_FACILITATOR=<url> GUARDBOT_PAY_TO=0x<you> python3 guardd.py
   verdicts are always produced first-hand.
 
 This is a safety signal on public data, not financial advice.
+
+## Who built this
+
+Anthony Gozzini — [project page](https://anthonygozzini.github.io/projects/#guardbot) · [anthonygozzini.github.io](https://anthonygozzini.github.io/)
