@@ -220,7 +220,7 @@ Run `python3 mcp_server.py` to expose `check_token(chain, address)` as an MCP to
 
 
 class H(BaseHTTPRequestHandler):
-    server_version = "guardbot/1.0.0"
+    server_version = "guardbot/1.1.0"
 
     def log_message(self, *a):
         print(f"[{time.strftime('%H:%M:%S')}] " + (a[0] % a[1:]), flush=True)

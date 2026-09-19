@@ -669,7 +669,9 @@ class TestMcpIntrospection(unittest.TestCase):
         lines = [json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                              "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                                         "clientInfo": {"name": "test", "version": "1"}}})]
-        lines += [json.dumps({"jsonrpc": "2.0", "id": i + 2, "method": m})
+        lines += [json.dumps({"jsonrpc": "2.0", "id": i + 2, "method": m[0], "params": m[1]}
+                             if isinstance(m, tuple) else
+                             {"jsonrpc": "2.0", "id": i + 2, "method": m})
                   for i, m in enumerate(methods)]
         out = subprocess.run([sys.executable, "mcp_server.py"], cwd=self.ROOT,
                              input="\n".join(lines) + "\n", capture_output=True, text=True,
@@ -684,10 +686,21 @@ class TestMcpIntrospection(unittest.TestCase):
         for r in replies:
             self.assertNotIn("error", r, r)
         self.assertEqual({t["name"] for t in replies[1]["result"]["tools"]},
-                         {"check_token", "check_approvals"})
+                         {"check_token", "check_approvals", "simulate_revoke"})
         self.assertEqual(replies[2]["result"]["resources"], [])
         self.assertEqual(replies[3]["result"]["prompts"], [])
         self.assertEqual(replies[4]["result"]["resourceTemplates"], [])
+
+    def test_revoke_tool_answers_without_inventing_a_verdict(self):
+        """An unsupported chain must come back as an error, not as a revoke that "works"."""
+        call = ("tools/call", {"name": "simulate_revoke",
+                               "arguments": {"chain": "dogecoin",
+                                             "owner": "0x" + "11" * 20,
+                                             "token": "0x" + "22" * 20,
+                                             "spender": "0x" + "33" * 20}})
+        res = self._exchange(call)[1]["result"]
+        self.assertTrue(res["isError"])
+        self.assertIn("not supported", res["content"][0]["text"])
 
     def test_every_tool_declares_a_schema(self):
         tools = self._exchange("tools/list")[1]["result"]["tools"]

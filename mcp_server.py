@@ -14,6 +14,7 @@ import json
 import sys
 
 import guard
+import revoke
 import solcheck
 import tokencheck
 import troncheck
@@ -56,6 +57,41 @@ TOOLS = [
             "required": ["address"],
         },
     },
+    {
+        "name": "simulate_revoke",
+        "description": ("Prove a revoke BEFORE it is signed. Builds the one transaction that "
+                        "removes a single approval — ERC-20 approve(spender, 0), NFT "
+                        "setApprovalForAll(operator, false), or a grant held inside Permit2 — "
+                        "then runs it against live state on the node and re-reads the grant in "
+                        "the same simulated block, so 'works' is measured, not assumed. Nothing "
+                        "is signed, sent or broadcast: the calldata comes back for a wallet or "
+                        "an offline signer, and the amount is hard-coded to zero. Read-only. "
+                        "Use check_approvals first to find which grant to remove; use this to "
+                        "prove that removing it will actually work."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "chain": {"type": "string",
+                          "description": "ethereum | bsc | polygon | base | arbitrum | "
+                                         "avalanche | solana | tron"},
+                "owner": {"type": "string",
+                          "description": "the wallet that holds the grant: EVM 0x…, TRON T…, "
+                                         "or Solana base58"},
+                "token": {"type": "string",
+                          "description": "token contract (EVM, TRON); on Solana, the token "
+                                         "ACCOUNT that holds the delegate, not the mint"},
+                "spender": {"type": "string",
+                            "description": "the spender or NFT operator to cut off (EVM, TRON); "
+                                           "not used on Solana, where the delegate is read from "
+                                           "the account"},
+                "kind": {"type": "string",
+                         "description": "EVM only: approval (ERC-20, default) | nft_operator | "
+                                        "permit2. A Permit2 grant survives zeroing the ERC-20 "
+                                        "approval to Permit2, so it must be revoked as permit2"},
+            },
+            "required": ["chain", "owner", "token"],
+        },
+    },
 ]
 
 
@@ -80,7 +116,7 @@ def handle(msg):
     if method == "initialize":
         result(id_, {"protocolVersion": PROTOCOL,
                      "capabilities": {"tools": {}},
-                     "serverInfo": {"name": "guardbot", "version": "1.0.0"}})
+                     "serverInfo": {"name": "guardbot", "version": "1.1.0"}})
     elif method == "ping":
         result(id_, {})
     elif method == "tools/list":
@@ -102,6 +138,17 @@ def handle(msg):
         try:
             if name == "check_approvals":
                 verdict = approvals_mod.approvals(args.get("address", ""))
+            elif name == "simulate_revoke":
+                chain = (args.get("chain") or "").lower()
+                owner, token = args.get("owner", ""), args.get("token", "")
+                spender = args.get("spender", "")
+                if chain == "solana":
+                    verdict = revoke.simulate_revoke_solana(owner, token)
+                elif chain == "tron":
+                    verdict = revoke.simulate_revoke_tron(owner, token, spender)
+                else:
+                    verdict = revoke.simulate_revoke(chain, args.get("kind") or "approval",
+                                                     owner, token, spender)
             else:
                 chain = (args.get("chain") or "").lower()
                 if chain == "solana":

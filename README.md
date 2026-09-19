@@ -32,7 +32,9 @@ From the CLI or as an agent tool:
 ```bash
 python3 tokencheck.py bsc 0x<token>       # is it a trap?
 python3 approvals.py  0x<wallet>          # what has it approved? (also T… / Solana base58)
-python3 mcp_server.py                     # MCP: check_token + check_approvals for agents
+python3 revoke.py bsc approval 0x<token> 0x<spender> 0x<wallet>   # prove the revoke first
+python3 mcp_server.py                     # MCP: check_token, check_approvals,
+                                          #      simulate_revoke — the agent tools
 ```
 
 In a container, the way a registry or a sandboxed client starts it (no dependencies to install):
