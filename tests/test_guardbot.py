@@ -738,18 +738,27 @@ class TestBenchmarkScoring(unittest.TestCase):
         return {"verdict": verdict, "checks": [{"name": f, "status": "fail"} for f in fails],
                 "simulation": {"pair": pool}}
 
-    def test_trap_outcomes(self):
-        c = self.h.classify
-        self.assertEqual(c("trap", self._r("block", ["honeypot"])), "detected")
-        self.assertEqual(c("trap", self._r("block", ["identity"])), "detected")
-        self.assertEqual(c("trap", self._r("block", ["identity"], pool=None)), "detected")
-        self.assertEqual(c("trap", self._r("block", ["liquidity"], pool=None)), "dead")
-        self.assertEqual(c("trap", self._r("block", ["liquidity"])), "dead")
-        self.assertEqual(c("trap", self._r("block", ["honeypot", "liquidity"])), "dead")
-        self.assertEqual(c("trap", self._r("block", ["honeypot"], pool=None)), "dead")
-        self.assertEqual(c("trap", self._r("warn")), "softmiss")
-        self.assertEqual(c("trap", self._r("safe")), "missed")
-        self.assertEqual(c("trap", {"error": "rpc down"}), "error")
+    def test_honeypot_outcomes(self):
+        c = lambda r: self.h.classify("trap", r, "honeypot")
+        self.assertEqual(c(self._r("block", ["honeypot"])), "detected")
+        self.assertEqual(c(self._r("block", ["tax"])), "detected")
+        self.assertEqual(c(self._r("block", ["liquidity"], pool=None)), "dead")
+        self.assertEqual(c(self._r("block", ["liquidity"])), "dead")
+        self.assertEqual(c(self._r("block", ["honeypot", "liquidity"])), "dead")
+        self.assertEqual(c(self._r("block", ["honeypot", "identity", "liquidity"])), "dead")
+        self.assertEqual(c(self._r("block", ["honeypot"], pool=None)), "dead")
+        self.assertEqual(c(self._r("warn")), "softmiss")
+        self.assertEqual(c(self._r("safe")), "missed")
+        self.assertEqual(c({"error": "rpc down"}), "error")
+
+    def test_impostor_outcomes(self):
+        c = lambda r: self.h.classify("trap", r, "impostor")
+        self.assertEqual(c(self._r("block", ["identity"])), "detected")
+        self.assertEqual(c(self._r("block", ["identity"], pool=None)), "detected")
+        self.assertEqual(c(self._r("block", ["liquidity"], pool=None)), "missed",
+                         "blocked for the wrong reason is not a detection")
+        self.assertEqual(c(self._r("warn")), "softmiss")
+        self.assertEqual(c(self._r("safe")), "missed")
 
     def test_safe_outcomes(self):
         c = self.h.classify

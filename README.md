@@ -151,6 +151,50 @@ GUARDBOT_FACILITATOR=<url> GUARDBOT_PAY_TO=0x<you> python3 guardd.py
 - `homoglyphs.py` — lookalike-character folding · `keccak.py` — pure-Python keccak256
 - `tools/` — miners (`mine_*.py`), `refresh.py`, `deepscan_bsc.py`, `testnet_e2e.py`
 
+## Measured error rate
+
+GuardBot is scored, not trusted. `benchmark/harness.py` replays `check_token` over a fixed set of
+tokens whose nature was established by someone else, and publishes every wrong answer by name.
+Ground truth is never GuardBot's own verdict: a **trap** is either an impostor proven by an
+on-chain fact (`symbol()` claims a major ticker while the canonical contract lives at another
+address) or a honeypot labeled by GoPlus on a recorded date; a **blue chip** is a canonical
+contract whose tradability nobody disputes. A trap counts only while its pool is alive — a dead
+trap is blocked by anyone, so it is listed, not scored.
+
+Run of 2026-09-19 23:23 UTC, GuardBot `9068887`, 29 tokens (`benchmark/results.json` has every row):
+
+| | count |
+|---|---|
+| Live traps in the set | 5 |
+| Detected (blocked with the trap demonstrated) | 5 — **100%** |
+| Missed (answered *safe*) | 0 |
+| Dead traps (pool empty, excluded) | 3 |
+| Blue chips in the set, across BSC · Ethereum · Arbitrum · Base · Polygon | 21 |
+| Wrongly blocked | 0 — **0%** |
+| Wrongly warned | 0 |
+
+What the harness has already paid for, on its first run: **Ethereum USDT came back `block`**, a
+false honeypot on the most traded token there is. The cause was a stranger's leftover 4 USDT
+allowance from the shared Multicall3 contract to the Uniswap router, which Tether's `approve()`
+refuses to overwrite; the sell simulation now zeroes the allowance first. That is the point of
+measuring: the number was wrong before anyone said so.
+
+What the numbers do not say:
+
+- **Five live traps is a small set.** Live honeypots with an independent label are rare and
+  short-lived — of 155 pools launched on BSC and Base on 2026-09-19, two still had a pool twelve
+  hours later, and the labelers disagreed on the one flagged. `benchmark/hunt.py` collects fresh
+  launches and labels them with both GoPlus and honeypot.is; only tokens both agree on, with a
+  live pool, are added. The set grows as they are found; the rate is re-measured every release.
+- **Liquidity is measured on the native-coin pair only.** A token whose depth sits in a USDT pair
+  can be reported as thin even when it trades fine (seen on a BSC token with $194k in its USDT
+  pool and $20 against WBNB). That is a coverage limit, not a verdict, and it is not in the score.
+- **Labelers are not oracles.** honeypot.is flags a BSC token (AKE, 42k holders) as a honeypot;
+  GoPlus and GuardBot's own buy-and-sell both say it sells at 101%. Disputed tokens stay out.
+
+Reproduce: `python3 benchmark/harness.py` (adds `--relabel` to re-ask GoPlus whether each trap
+still is one). Extend: `python3 benchmark/hunt.py collect bsc` today, `… label` tomorrow.
+
 ## References
 
 - x402 payment protocol (the spec the payment rail implements) —

@@ -116,7 +116,7 @@ def handle(msg):
     if method == "initialize":
         result(id_, {"protocolVersion": PROTOCOL,
                      "capabilities": {"tools": {}},
-                     "serverInfo": {"name": "guardbot", "version": "1.1.0"}})
+                     "serverInfo": {"name": "guardbot", "version": "1.2.0"}})
     elif method == "ping":
         result(id_, {})
     elif method == "tools/list":

@@ -1,0 +1,245 @@
+{
+ "version": 1,
+ "criterion": {
+  "trap": "GoPlus is_honeypot=1 on the labeled date with a live pool, OR an on-chain fact: symbol() claims a major ticker while the canonical contract is a different address",
+  "safe": "blue-chip token at its canonical address, symbol() verified on chain",
+  "rule": "a trap counts only while its pool is alive; a dead trap is listed, not scored"
+ },
+ "tokens": [
+  {
+   "chain": "bsc",
+   "address": "0x55d398326f99059ff775485246999027b3197955",
+   "expect": "safe",
+   "name": "USDT",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+   "expect": "safe",
+   "name": "USDC",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+   "expect": "safe",
+   "name": "Cake",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x2170ed0880ac9a755fd29b2688956bd959f933f8",
+   "expect": "safe",
+   "name": "ETH",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c",
+   "expect": "safe",
+   "name": "BTCB",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "bsc",
+   "address": "0xe9e7cea3dedca5984780bafc599bd69add087d56",
+   "expect": "safe",
+   "name": "BUSD",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "ethereum",
+   "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "expect": "safe",
+   "name": "USDT",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "ethereum",
+   "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "expect": "safe",
+   "name": "USDC",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "ethereum",
+   "address": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "expect": "safe",
+   "name": "DAI",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "ethereum",
+   "address": "0x514910771af9ca656af840dff83e8264ecf986ca",
+   "expect": "safe",
+   "name": "LINK",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "ethereum",
+   "address": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+   "expect": "safe",
+   "name": "UNI",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "ethereum",
+   "address": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "expect": "safe",
+   "name": "WBTC",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "arbitrum",
+   "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+   "expect": "safe",
+   "name": "USDC",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "arbitrum",
+   "address": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+   "expect": "safe",
+   "name": "ARB",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "arbitrum",
+   "address": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+   "expect": "safe",
+   "name": "USD₮0",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "base",
+   "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+   "expect": "safe",
+   "name": "USDC",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "base",
+   "address": "0x50c5725949a6f0c72e6c4a641f24049a917db0cb",
+   "expect": "safe",
+   "name": "DAI",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "base",
+   "address": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+   "expect": "safe",
+   "name": "DEGEN",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "polygon",
+   "address": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+   "expect": "safe",
+   "name": "USDC",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "polygon",
+   "address": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+   "expect": "safe",
+   "name": "USDT0",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "polygon",
+   "address": "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063",
+   "expect": "safe",
+   "name": "DAI",
+   "source": "blue chip",
+   "why": "canonical contract, symbol() verified on chain 2026-09-19; top-tier liquidity, tradability undisputed"
+  },
+  {
+   "chain": "bsc",
+   "address": "0xbec0209f3fe563f6726f7bee38d72d57fd758888",
+   "expect": "trap",
+   "kind": "impostor",
+   "source": "on-chain",
+   "why": "homoglyph 'USDT' ticker; honeypot.is marks it PASSED; the canonical USDT on BSC is 0x55d398326f99059ff775485246999027b3197955"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x655b8a8419d6b0275f5aacb4be88aea3e469a2b8",
+   "expect": "trap",
+   "kind": "impostor",
+   "source": "on-chain",
+   "why": "symbol() returns 'USDT'; the canonical USDT on BSC is 0x55d398326f99059ff775485246999027b3197955"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x53062ced2398fbe80d51c222ce43ee04b73adfcc",
+   "expect": "trap",
+   "kind": "impostor",
+   "source": "on-chain",
+   "why": "BscScan labels it FakeUSDT; symbol() still says 'USDT'; the canonical USDT on BSC is 0x55d398326f99059ff775485246999027b3197955"
+  },
+  {
+   "chain": "bsc",
+   "address": "0xa31f198088fbd75ecd8700f989587d413a1b8888",
+   "expect": "trap",
+   "kind": "impostor",
+   "source": "on-chain",
+   "why": "symbol() returns 'USDT'; the canonical USDT on BSC is 0x55d398326f99059ff775485246999027b3197955"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x31c2a17ea816833ebb3df383f6b6d7895ba04e7b",
+   "expect": "trap",
+   "kind": "impostor",
+   "source": "on-chain",
+   "why": "symbol() returns 'USDT'; the canonical USDT on BSC is 0x55d398326f99059ff775485246999027b3197955"
+  },
+  {
+   "chain": "bsc",
+   "address": "0xb7fe3b77432fe4fc245f700df846f57511cf84a7",
+   "expect": "trap",
+   "kind": "honeypot",
+   "source": "goplus",
+   "labeled": "2026-09-19",
+   "why": "in GuardBot's original live test set; GoPlus is_honeypot=1 (BNBDOG) or no longer indexed — kept so the harness shows what happens to a trap once its pool dies"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x67c91d04728ffcda058d86c33f7ba6f899aae3a9",
+   "expect": "trap",
+   "kind": "honeypot",
+   "source": "goplus",
+   "labeled": "2026-09-19",
+   "why": "in GuardBot's original live test set; GoPlus is_honeypot=1 (BNBDOG) or no longer indexed — kept so the harness shows what happens to a trap once its pool dies"
+  },
+  {
+   "chain": "bsc",
+   "address": "0x760884305acadc6ac243572f49e763a63f9a7afa",
+   "expect": "trap",
+   "kind": "honeypot",
+   "source": "goplus",
+   "labeled": "2026-09-19",
+   "why": "in GuardBot's original live test set; GoPlus is_honeypot=1 (BNBDOG) or no longer indexed — kept so the harness shows what happens to a trap once its pool dies"
+  }
+ ]
+}
