@@ -166,3 +166,5 @@ MIT — see [LICENSE](LICENSE).
 ## Who built this
 
 Anthony Gozzini — [project page](https://anthonygozzini.github.io/projects/#guardbot) · [anthonygozzini.github.io](https://anthonygozzini.github.io/)
+
+<p align="center"><a href="https://glama.ai/mcp/servers/anthonygozzini/guardbot"><img src="https://glama.ai/mcp/servers/anthonygozzini/guardbot/badges/card.svg" alt="GuardBot MCP server — quality and maintenance score on Glama"></a></p>
