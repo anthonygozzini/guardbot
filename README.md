@@ -1,5 +1,7 @@
 # GuardBot ⚡ — pre-trade safety for agents & bots
 
+<p align="center"><a href="https://glama.ai/mcp/servers/anthonygozzini/guardbot"><img src="https://glama.ai/mcp/servers/anthonygozzini/guardbot/badges/score.svg" alt="GuardBot MCP server — quality and maintenance score on Glama"></a></p>
+
 <p align="center"><a href="https://anthonygozzini.github.io/guardbot/demo.html"><img src="assets/demo.gif" alt="35-second demo: a block verdict with evidence on a homoglyph impostor token, an honest safe on real USDT with measured numbers, a one-QR three-chain wallet connection, and an on-chain-simulated revoke" width="820"></a></p>
 <p align="center"><b><a href="https://anthonygozzini.github.io/guardbot/demo.html">▶ Interactive 35-second demo</a></b> — real recorded runs, reproducible from this repo.</p>
 
