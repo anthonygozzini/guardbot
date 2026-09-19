@@ -20,7 +20,9 @@ and a lying token inventing approvals. Each has a test so it cannot come back qu
 Run:  python3 -m unittest discover -s tests -v
 """
 
+import json
 import os
+import subprocess
 import sys
 import time
 import unittest
@@ -652,6 +654,47 @@ class TestLiveApprovals(unittest.TestCase):
         cached = approvals.approvals(self.ADDR, cached_only=True)
         self.assertLess(time.time() - t0, 0.5)
         self.assertTrue(cached.get("stale"))
+
+
+class TestMcpIntrospection(unittest.TestCase):
+    """The exchange a registry or client runs before it will list us: start, then ask what is
+
+    inside. Answering resources/list or prompts/list with a JSON-RPC error reads as a broken
+    server even though we only advertise tools, so the empty answers are pinned here.
+    """
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _exchange(self, *methods):
+        lines = [json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                             "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                        "clientInfo": {"name": "test", "version": "1"}}})]
+        lines += [json.dumps({"jsonrpc": "2.0", "id": i + 2, "method": m})
+                  for i, m in enumerate(methods)]
+        out = subprocess.run([sys.executable, "mcp_server.py"], cwd=self.ROOT,
+                             input="\n".join(lines) + "\n", capture_output=True, text=True,
+                             timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
+
+    def test_introspection_answers_every_list(self):
+        replies = self._exchange("tools/list", "resources/list", "prompts/list",
+                                 "resources/templates/list", "ping")
+        self.assertEqual(len(replies), 6)
+        for r in replies:
+            self.assertNotIn("error", r, r)
+        self.assertEqual({t["name"] for t in replies[1]["result"]["tools"]},
+                         {"check_token", "check_approvals"})
+        self.assertEqual(replies[2]["result"]["resources"], [])
+        self.assertEqual(replies[3]["result"]["prompts"], [])
+        self.assertEqual(replies[4]["result"]["resourceTemplates"], [])
+
+    def test_every_tool_declares_a_schema(self):
+        tools = self._exchange("tools/list")[1]["result"]["tools"]
+        for t in tools:
+            self.assertTrue(t["description"].strip())
+            self.assertEqual(t["inputSchema"]["type"], "object")
+            self.assertTrue(t["inputSchema"]["required"])
 
 
 if __name__ == "__main__":

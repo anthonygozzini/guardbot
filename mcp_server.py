@@ -85,6 +85,14 @@ def handle(msg):
         result(id_, {})
     elif method == "tools/list":
         result(id_, {"tools": TOOLS})
+    # registries (Glama, inspectors) introspect resources and prompts even though we advertise
+    # only tools: an empty list is an answer, a -32601 error looks like a broken server
+    elif method == "resources/list":
+        result(id_, {"resources": []})
+    elif method == "resources/templates/list":
+        result(id_, {"resourceTemplates": []})
+    elif method == "prompts/list":
+        result(id_, {"prompts": []})
     elif method == "tools/call":
         params = msg.get("params") or {}
         name = params.get("name")

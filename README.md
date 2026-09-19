@@ -33,6 +33,12 @@ python3 approvals.py  0x<wallet>          # what has it approved? (also T… / S
 python3 mcp_server.py                     # MCP: check_token + check_approvals for agents
 ```
 
+In a container, the way a registry or a sandboxed client starts it (no dependencies to install):
+
+```bash
+docker build -t guardbot . && docker run -i --rm guardbot   # MCP over stdio
+```
+
 ## Why trust the verdicts
 
 - **The buy and sell are real.** A state-override `eth_call` gives a throwaway address native

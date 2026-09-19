@@ -1,0 +1,7 @@
+.git
+.env
+guardbot-secret.bin
+__pycache__
+*.pyc
+*.log
+HANDOFF.md
