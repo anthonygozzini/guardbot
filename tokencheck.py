@@ -208,6 +208,15 @@ def _venue(url, chain):
     return None, None, None
 
 
+def _approve_calls(token, spender):
+    """Reset the allowance to zero before setting it. Multicall3 is everyone's contract, so a
+    stranger's past transaction can leave it a non-zero allowance to the router — and Tether's
+    approve() refuses to move a non-zero allowance to another non-zero value. Ethereum USDT was
+    being branded a honeypot over 4 USDT someone else left behind. Standard tokens don't care."""
+    return [(token, True, 0, selector("approve(address,uint256)") + _a32(spender) + _w(0)),
+            (token, True, 0, selector("approve(address,uint256)") + _a32(spender) + _w(MAX_UINT))]
+
+
 def _simulate(url, chain, token, router, weth, factory, block="latest"):
     """Buy the token with native coin, then sell it all back — atomically, in one eth_call,
     using Multicall3 as the throwaway holder. Returns the measured facts.
@@ -255,7 +264,7 @@ def _simulate(url, chain, token, router, weth, factory, block="latest"):
     res, _ = _call(url, router, _enc_amounts_out(got, [token, weth]), block=block)
     exp_back = _dec_uint_array(res)[-1] if res else 0
     sell = [(router, True, amt, _enc_buy(0, [weth, token], MULTICALL3)),
-            (token, True, 0, selector("approve(address,uint256)") + _a32(router) + _w(MAX_UINT)),
+            *_approve_calls(token, router),
             (router, True, 0, _enc_sell(int(got * SELL_FRACTION), 0, [token, weth], PROBE_EOA)),
             (MULTICALL3, True, 0, selector("getEthBalance(address)") + _a32(PROBE_EOA))]
     res, err = _call(url, MULTICALL3, _enc_call3value(sell), ov, PROBE_EOA, amt, block)
@@ -263,12 +272,12 @@ def _simulate(url, chain, token, router, weth, factory, block="latest"):
         out["error"] = f"sell simulation unavailable: {err}"
         return out
     r = _dec_results(res)
-    out["approve_ok"] = r[1][0]
-    out["sellable"] = r[2][0]
+    out["approve_ok"] = r[2][0]
+    out["sellable"] = r[3][0]
     if not out["sellable"]:
         out["reason"] = "sell_reverted"
         return out
-    back = _uint(r[3][1]) - (START_BAL - amt) if r[3][0] else 0
+    back = _uint(r[4][1]) - (START_BAL - amt) if r[4][0] else 0
     out["native_back"] = back
     out["round_trip_pct"] = round(back / (amt * SELL_FRACTION) * 100, 2) if amt else 0
     if exp_back > 0:
@@ -366,7 +375,7 @@ def _simulate_v3(url, chain, token, weth, block="latest"):
         out["reason"] = "cannot_buy"
         return out
     sell = buy + [
-        (token, True, 0, selector("approve(address,uint256)") + _a32(v3router) + _w(MAX_UINT)),
+        *_approve_calls(token, v3router),
         (v3router, True, 0, _enc_exact_in(token, weth, fee, MULTICALL3, int(got * SELL_FRACTION))),
         (weth, True, 0, selector("balanceOf(address)") + _a32(MULTICALL3))]
     res, err = _call(url, MULTICALL3, _enc_call3value(sell), ov, PROBE_EOA, amt, block)
@@ -374,11 +383,11 @@ def _simulate_v3(url, chain, token, weth, block="latest"):
         out["error"] = f"V3 sell simulation unavailable: {err}"
         return out
     r = _dec_results(res)
-    out["sellable"] = r[5][0]
+    out["sellable"] = r[6][0]
     if not out["sellable"]:
         out["reason"] = "sell_reverted"
         return out
-    back = _uint(r[6][1]) if r[6][0] else 0
+    back = _uint(r[7][1]) if r[7][0] else 0
     out["native_back"] = back
     out["round_trip_pct"] = round(back / (amt * SELL_FRACTION) * 100, 2) if amt else 0
     fee_factor = (1 - fee / 1_000_000) ** 2

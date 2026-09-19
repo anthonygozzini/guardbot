@@ -540,6 +540,21 @@ class TestFailureIsNotSilent(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class TestSellResetsAllowanceFirst(unittest.TestCase):
+    """Ethereum USDT was branded a honeypot: Multicall3 already held a 4 USDT allowance to the
+    router (someone else's leftover), and Tether refuses approve() from non-zero to non-zero,
+    so our approve failed and the sell reverted. The sell bundle must zero the allowance first."""
+
+    def test_zero_approve_precedes_max_approve(self):
+        router = "0x" + "ab" * 20
+        calls = tokencheck._approve_calls("0x" + "cd" * 20, router)
+        self.assertEqual(len(calls), 2)
+        sel = tokencheck.selector("approve(address,uint256)")
+        self.assertEqual(calls[0][3], sel + tokencheck._a32(router) + tokencheck._w(0))
+        self.assertEqual(calls[1][3], sel + tokencheck._a32(router) + tokencheck._w(tokencheck.MAX_UINT))
+        self.assertTrue(all(c[1] for c in calls), "both approves must be allowed to revert-check")
+
+
 class TestSellMarginIsNotATax(unittest.TestCase):
     def test_round_trip_is_normalised_by_what_was_sold(self):
         """We sell 99% on purpose; dividing by 100% reported a ~1.6% tax that was our own margin."""
@@ -554,6 +569,7 @@ class TestSellMarginIsNotATax(unittest.TestCase):
 @live_only
 class TestLiveTokenSafety(unittest.TestCase):
     GOOD = [("bsc", "0x55d398326f99059ff775485246999027b3197955"),      # USDT
+            ("ethereum", "0xdAC17F958D2ee523a2206206994597C13D831ec7"),  # USDT — Tether's approve guard
             ("bsc", "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"),      # CAKE
             ("ethereum", "0x6B175474E89094C44Da98b954EedeAC495271d0F"),  # DAI
             ("arbitrum", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),  # native USDC
@@ -708,6 +724,59 @@ class TestMcpIntrospection(unittest.TestCase):
             self.assertTrue(t["description"].strip())
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertTrue(t["inputSchema"]["required"])
+
+
+class TestBenchmarkScoring(unittest.TestCase):
+    """The harness must not flatter the engine: a trap blocked only because its pool is empty is
+    a death, not a detection, and a blue chip answered 'warn' is a false alarm, not a pass."""
+
+    def setUp(self):
+        from benchmark import harness
+        self.h = harness
+
+    def _r(self, verdict, fails=(), pool="0xpool"):
+        return {"verdict": verdict, "checks": [{"name": f, "status": "fail"} for f in fails],
+                "simulation": {"pair": pool}}
+
+    def test_trap_outcomes(self):
+        c = self.h.classify
+        self.assertEqual(c("trap", self._r("block", ["honeypot"])), "detected")
+        self.assertEqual(c("trap", self._r("block", ["identity"])), "detected")
+        self.assertEqual(c("trap", self._r("block", ["identity"], pool=None)), "detected")
+        self.assertEqual(c("trap", self._r("block", ["liquidity"], pool=None)), "dead")
+        self.assertEqual(c("trap", self._r("block", ["liquidity"])), "dead")
+        self.assertEqual(c("trap", self._r("block", ["honeypot", "liquidity"])), "dead")
+        self.assertEqual(c("trap", self._r("block", ["honeypot"], pool=None)), "dead")
+        self.assertEqual(c("trap", self._r("warn")), "softmiss")
+        self.assertEqual(c("trap", self._r("safe")), "missed")
+        self.assertEqual(c("trap", {"error": "rpc down"}), "error")
+
+    def test_safe_outcomes(self):
+        c = self.h.classify
+        self.assertEqual(c("safe", self._r("safe")), "clean")
+        self.assertEqual(c("safe", self._r("warn")), "false_alarm")
+        self.assertEqual(c("safe", self._r("block", ["tax"])), "false_block")
+
+    def test_rates_exclude_dead_traps(self):
+        rows = [{"outcome": o} for o in ("detected", "detected", "missed", "dead", "dead",
+                                          "clean", "clean", "clean", "false_block")]
+        s = self.h.summarize(rows)
+        self.assertEqual(s["traps_live"], 3)
+        self.assertEqual(s["traps_dead"], 2)
+        self.assertAlmostEqual(s["detection_rate_pct"], 66.7)
+        self.assertAlmostEqual(s["false_block_rate_pct"], 25.0)
+
+    def test_set_file_is_well_formed(self):
+        spec = json.load(open(os.path.join(self.h.HERE, "set.json")))
+        seen = set()
+        for t in spec["tokens"]:
+            self.assertIn(t["expect"], ("trap", "safe"))
+            self.assertTrue(t["why"])
+            key = (t["chain"], t["address"].lower())
+            self.assertNotIn(key, seen, "duplicate token in the set")
+            seen.add(key)
+            if t["expect"] == "trap":
+                self.assertIn(t["source"], ("goplus", "on-chain"))
 
 
 if __name__ == "__main__":
